@@ -4,3 +4,5 @@
 /[Bb]uild*
 CLAUDE.md
 /.claude
+/shaders/mytest*
+/private
