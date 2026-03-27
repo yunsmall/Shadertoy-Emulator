@@ -1,0 +1,19 @@
+{
+  "name": "blackhole1",
+  "passes": [
+    {
+      "name": "BufferA",
+      "shader": "buffera.glsl",
+      "channels": {
+        "0": { "type": "buffer", "source": "BufferA" }
+      }
+    },
+    {
+      "name": "Image",
+      "shader": "image.glsl",
+      "channels": {
+        "0": { "type": "buffer", "source": "BufferA" }
+      }
+    }
+  ]
+}

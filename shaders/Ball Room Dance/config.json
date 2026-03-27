@@ -1,0 +1,30 @@
+{
+  "name": "Ball Room Dance",
+  "width": 1280,
+  "height": 720,
+  "common": "common.glsl",
+  "passes": [
+    {
+      "name": "BufferA",
+      "shader": "buffera.glsl",
+      "channels": {
+        "0": { "type": "buffer", "source": "BufferA" }
+      }
+    },
+    {
+      "name": "BufferB",
+      "shader": "bufferb.glsl",
+      "channels": {
+        "0": { "type": "buffer", "source": "BufferB" },
+        "1": { "type": "buffer", "source": "BufferA" }
+      }
+    },
+    {
+      "name": "Image",
+      "shader": "image.glsl",
+      "channels": {
+        "0": { "type": "buffer", "source": "BufferB" }
+      }
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "name": "Planet Shadertoy",
+  "width": 800,
+  "height": 600,
+  "passes": [
+    {
+      "name": "Image",
+      "shader": "image.glsl",
+      "channels": {
+        "0": {"type": "texture","source": "noise.png"}
+      }
+    }
+  ]
+}

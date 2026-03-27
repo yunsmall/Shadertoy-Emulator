@@ -1,0 +1,15 @@
+{
+  "name": "Sound Test",
+  "width": 800,
+  "height": 600,
+  "passes": [
+    {
+      "name": "Sound",
+      "shader": "sound.glsl"
+    },
+    {
+      "name": "Image",
+      "shader": "image.glsl"
+    }
+  ]
+}

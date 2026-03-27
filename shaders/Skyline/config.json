@@ -1,0 +1,12 @@
+{
+  "name": "Skyline",
+  "passes": [
+    {
+      "name": "Image",
+      "shader": "image.glsl",
+      "channels": {
+        "0": {"type": "texture","source": "ground.png"}
+      }
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "name": "Blackhole",
+  "passes": [
+    {
+      "name": "BufferA",
+      "shader": "buffera.glsl",
+      "channels": {
+        "0": { "type": "keyboard" },
+        "2": { "type": "buffer", "source": "BufferB" },
+        "3": { "type": "buffer", "source": "BufferA" }
+      }
+    },
+    {
+      "name": "BufferB",
+      "shader": "bufferb.glsl",
+      "channels": {
+        "0": { "type": "buffer", "source": "BufferA" },
+        "1": { "type": "buffer", "source": "BufferB" },
+        "3": { "type": "keyboard" }
+      }
+    },
+    {
+      "name": "BufferC",
+      "shader": "bufferc.glsl",
+      "channels": {
+        "0": { "type": "buffer", "source": "BufferB" }
+      }
+    },
+    {
+      "name": "BufferD",
+      "shader": "bufferd.glsl",
+      "channels": {
+        "0": { "type": "buffer", "source": "BufferC" }
+      }
+    },
+    {
+      "name": "Image",
+      "shader": "image.glsl",
+      "channels": {
+        "0": { "type": "buffer", "source": "BufferA" },
+        "1": { "type": "buffer", "source": "BufferB" },
+        "2": { "type": "buffer", "source": "BufferC" },
+        "3": { "type": "buffer", "source": "BufferD" }
+      }
+    }
+  ]
+}

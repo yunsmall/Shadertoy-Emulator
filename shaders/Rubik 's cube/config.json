@@ -1,0 +1,21 @@
+{
+  "name": "Rubik 's cube",
+  "common": "common.glsl",
+  "passes": [
+    {
+      "name": "BufferA",
+      "shader": "buffera.glsl",
+      "channels": {
+        "0": {"type": "buffer","source": "BufferA"},
+        "1": {"type": "keyboard"}
+      }
+    },
+    {
+      "name": "Image",
+      "shader": "image.glsl",
+      "channels": {
+        "0": {"type": "buffer","source": "BufferA"}
+      }
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "name": "Unreal Intro",
+  "width": 1280,
+  "height": 720,
+  "passes": [
+    {
+      "name": "Image",
+      "shader": "image.glsl",
+      "channels": {
+        "0": {
+          "type": "texture",
+          "source": "noise.png",
+          "filter": "mipmap",
+          "wrap": "repeat"
+        }
+      }
+    }
+  ]
+}

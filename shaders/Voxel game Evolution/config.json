@@ -1,0 +1,123 @@
+{
+  "name": "Voxel game Evolution",
+  "width": 800,
+  "height": 450,
+  "common": "common.glsl",
+  "passes": [
+    {
+      "name": "BufferA",
+      "shader": "buffera.glsl",
+      "channels": {
+        "0": {
+          "type": "buffer",
+          "source": "BufferA",
+          "filter": "nearest"
+        },
+        "1": {
+          "type": "buffer",
+          "source": "BufferB",
+          "filter": "nearest"
+        },
+        "2": {
+          "type": "keyboard"
+        },
+        "3": {
+          "type": "buffer",
+          "source": "BufferD"
+        }
+      }
+    },
+    {
+      "name": "BufferB",
+      "shader": "bufferb.glsl",
+      "channels": {
+        "0": {
+          "type": "buffer",
+          "source": "BufferA",
+          "filter": "nearest"
+        },
+        "1": {
+          "type": "buffer",
+          "source": "BufferB",
+          "filter": "nearest"
+        },
+        "2": {
+          "type": "buffer",
+          "source": "BufferC",
+          "filter": "nearest"
+        }
+      }
+    },
+    {
+      "name": "BufferC",
+      "shader": "bufferc.glsl",
+      "channels": {
+        "0": {
+          "type": "buffer",
+          "source": "BufferA",
+          "filter": "nearest"
+        },
+        "1": {
+          "type": "buffer",
+          "source": "BufferB",
+          "filter": "nearest"
+        },
+        "2": {
+          "type": "buffer",
+          "source": "BufferC",
+          "filter": "nearest"
+        }
+      }
+    },
+    {
+      "name": "BufferD",
+      "shader": "bufferd.glsl",
+      "channels": {
+        "0": {
+          "type": "buffer",
+          "source": "BufferA",
+          "filter": "nearest"
+        },
+        "1": {
+          "type": "buffer",
+          "source": "BufferB",
+          "filter": "nearest"
+        },
+        "2": {
+          "type": "buffer",
+          "source": "BufferC",
+          "filter": "nearest"
+        },
+        "3": {
+          "type": "buffer",
+          "source": "BufferD"
+        }
+      }
+    },
+    {
+      "name": "Image",
+      "shader": "image.glsl",
+      "channels": {
+        "0": {
+          "type": "buffer",
+          "source": "BufferA",
+          "filter": "nearest"
+        },
+        "1": {
+          "type": "buffer",
+          "source": "BufferB",
+          "filter": "nearest"
+        },
+        "2": {
+          "type": "buffer",
+          "source": "BufferC",
+          "filter": "nearest"
+        },
+        "3": {
+          "type": "buffer",
+          "source": "BufferD"
+        }
+      }
+    }
+  ]
+}

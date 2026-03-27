@@ -1,0 +1,36 @@
+{
+  "name": "Relativistic Space Drive",
+  "width": 1200,
+  "height": 900,
+  "common": "common.glsl",
+  "passes": [
+    {
+      "name": "BufferA",
+      "shader": "buffera.glsl",
+      "channels": {
+        "0": {
+          "type": "buffer",
+          "source": "BufferA"
+        },
+        "1": {
+          "type": "keyboard"
+        }
+      }
+    },
+    {
+      "name": "Image",
+      "shader": "image.glsl",
+      "channels": {
+        "0": {
+          "type": "buffer",
+          "source": "BufferA"
+        },
+        "2": {
+          "type": "texture",
+          "source": "font.png",
+          "flipY": true
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "name": "Planet Shadertoy",
+  "width": 800,
+  "height": 600,
+  "passes": [
+    {
+      "name": "BufferA",
+      "shader": "buffera.glsl",
+      "channels": {
+        "0": {"type": "buffer","source": "BufferA"}
+      }
+    },
+    {
+      "name": "Image",
+      "shader": "image.glsl",
+      "channels": {
+        "0": {"type": "buffer","source": "BufferA"}
+      }
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "name": "Gravity Simulation",
+  "width": 800,
+  "height": 600,
+  "common": "common.glsl",
+  "passes": [
+    {
+      "name": "BufferA",
+      "shader": "buffera.glsl",
+      "width": 30,
+      "height": 10,
+      "channels": {
+        "0": { "type": "buffer", "source": "BufferA" }
+      }
+    },
+    {
+      "name": "Image",
+      "shader": "image.glsl",
+      "channels": {
+        "0": { "type": "buffer", "source": "BufferA" }
+      }
+    }
+  ]
+}

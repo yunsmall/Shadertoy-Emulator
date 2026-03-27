@@ -1,0 +1,27 @@
+{
+  "name": "EscapeTheGamegrid",
+  "width": 800,
+  "height": 600,
+  "passes": [
+    {
+      "name": "BufferA",
+      "shader": "buffera.glsl",
+      "channels": {
+        "0": { "type": "buffer", "source": "BufferA" },
+        "1": { "type": "keyboard" },
+        "2": { "type": "texture", "source": "stones.png" },
+        "3": { "type": "texture", "source": "noise.png" }
+      }
+    },
+    {
+      "name": "Image",
+      "shader": "image.glsl",
+      "channels": {
+        "0": { "type": "buffer", "source": "BufferA" },
+        "1": { "type": "texture", "source": "stones.png" },
+        "2": { "type": "texture", "source": "fonts.png" },
+        "3": { "type": "texture", "source": "ground.png" }
+      }
+    }
+  ]
+}

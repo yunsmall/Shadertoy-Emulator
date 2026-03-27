@@ -1,0 +1,15 @@
+{
+  "name": "Voronoi - distances",
+  "passes": [
+    {
+      "name": "Image",
+      "shader": "image.glsl",
+      "channels": {
+        "0": {
+          "type": "texture",
+          "source": "noise.png"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "name": "Bricks Game",
+  "passes": [
+    {
+      "name": "BufferA",
+      "shader": "buffera.glsl",
+      "channels": {
+        "0": {
+          "type": "buffer",
+          "source": "BufferA",
+          "filter": "nearest"
+        },
+        "1": {
+          "type": "keyboard"
+        }
+      }
+    },
+    {
+      "name": "Image",
+      "shader": "image.glsl",
+      "channels": {
+        "0": {
+          "type": "buffer",
+          "source": "BufferA",
+          "filter": "nearest"
+        }
+      }
+    }
+  ]
+}
