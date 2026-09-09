@@ -21,7 +21,8 @@ class ShadertoyEmulator {
 public:
     explicit ShadertoyEmulator(const ShaderConfig& config, bool showFps = false, bool enableGui = false,
                                bool offscreen = false, const FrameRange& captureRange = {},
-                               const std::filesystem::path& captureDir = {}, float offlineFps = 60.0f);
+                               const std::filesystem::path& captureDir = {}, float offlineFps = 60.0f,
+                               const std::filesystem::path& audioDumpPath = {});
     void run();
 
 private:
@@ -45,6 +46,7 @@ private:
         GLint locIResolution = -1, locITime = -1, locITimeDelta = -1, locIFrame = -1;
         GLint locIFrameRate = -1, locIMouse = -1, locIDate = -1;
         GLint locChannelResolution = -1, locChannelTime = -1;
+        GLint locISampleRate = -1, locISampleOffset = -1;
         std::array<GLint, 4> locChannels = {-1, -1, -1, -1};
 
         GLFramebuffer* getWriteTarget() {
@@ -104,6 +106,7 @@ private:
     // 帧序列导出
     void runOffscreen();
     void captureFrame(int frameIndex);
+    void writeAudioDump();
 
     // 窗口相关
     sf::RenderWindow m_window;
@@ -128,6 +131,10 @@ private:
     FrameRange m_captureRange;
     std::filesystem::path m_captureDir;
     float m_offlineFps = 60.0f;  // 离屏模式的虚拟帧率，否则没有 vsync 时 iTime 几乎不涨
+
+    // 音频导出：路径非空时把 Sound pass 的输出攒下来，跑完写成一个 WAV
+    std::filesystem::path m_audioDumpPath;
+    std::vector<int16_t> m_audioDumpSamples;
 
     // 每帧时间，beginFrame() 算好后所有 pass 共用，避免 buffer 和 image 差一帧
     float m_frameTime = 0.0f;

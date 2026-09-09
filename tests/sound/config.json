@@ -1,0 +1,15 @@
+{
+  "name": "Sound Self Test",
+  "width": 64,
+  "height": 64,
+  "passes": [
+    {
+      "name": "Image",
+      "shader": "image.glsl"
+    },
+    {
+      "name": "Sound",
+      "shader": "sound.glsl"
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "name": "Cross Reference Self Test",
+  "width": 64,
+  "height": 64,
+  "passes": [
+    {
+      "name": "BufferA",
+      "shader": "buffera.glsl",
+      "channels": {
+        "0": { "type": "buffer", "source": "BufferB" }
+      }
+    },
+    {
+      "name": "BufferB",
+      "shader": "bufferb.glsl",
+      "channels": {
+        "0": { "type": "buffer", "source": "BufferA" }
+      }
+    },
+    {
+      "name": "Image",
+      "shader": "image.glsl",
+      "channels": {
+        "0": { "type": "buffer", "source": "BufferA" },
+        "1": { "type": "buffer", "source": "BufferB" }
+      }
+    }
+  ]
+}

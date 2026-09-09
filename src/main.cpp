@@ -20,6 +20,7 @@ int main(int argc, char* argv[]) {
         ("frames", "Frame range to save as PNG, Python slice syntax, e.g. 0:100:2 (stop required, excluded)", cxxopts::value<std::string>())
         ("output-dir", "Directory for saved frames (default: current directory)", cxxopts::value<std::string>()->default_value("."))
         ("offscreen", "Offscreen rendering: no window, no ImGui, no audio, no input (requires --frames)")
+        ("dump-audio", "Write Sound pass output to a WAV file (works with --offscreen too)", cxxopts::value<std::string>())
         ("builtin-preprocessor", "Use built-in GLSL preprocessor instead of external (glslangValidator)")
         ("input", "Shader file or config.json path (positional)", cxxopts::value<std::string>())
         ("help", "Print usage");
@@ -75,6 +76,11 @@ int main(int argc, char* argv[]) {
         }
         std::filesystem::path captureDir = result["output-dir"].as<std::string>();
 
+        std::filesystem::path audioDumpPath;
+        if (result.count("dump-audio") > 0) {
+            audioDumpPath = result["dump-audio"].as<std::string>();
+        }
+
         if (offscreen && !captureEnabled) {
             std::cerr << "--offscreen requires --frames, otherwise there is no exit condition.\n";
             return 1;
@@ -127,7 +133,7 @@ int main(int argc, char* argv[]) {
             enableGui = false;
         }
         ShadertoyEmulator emulator(config, showFps, enableGui, offscreen, captureRange, captureDir,
-                                   static_cast<float>(offlineFps));
+                                   static_cast<float>(offlineFps), audioDumpPath);
 
         std::cout << "Running... Press ESC to exit.\n";
         emulator.run();

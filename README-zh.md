@@ -58,6 +58,7 @@ ShadertoyEmulator config.json
 | `--frames <start:stop:step>` | 把匹配的帧保存为 PNG（Python 切片语法，`stop` 必填且不含） |
 | `--output-dir <dir>` | 保存目录（默认当前目录） |
 | `--offscreen` | 离屏渲染：无窗口、无 ImGui、无音频、无输入（需搭配 `--frames`） |
+| `--dump-audio <file.wav>` | 把 Sound pass 的输出写成 WAV（离屏模式下也能用） |
 | `--fps <n>` | 离屏渲染的虚拟帧率（默认 60） |
 | `--builtin-preprocessor` | 使用内置 GLSL 预处理器 |
 
@@ -112,6 +113,8 @@ ShadertoyEmulator config.json --frames 0:300:2 --output-dir frames/
 - 文件名为 `%05d.png`，用绝对帧号（`00000.png`、`00002.png`…）
 - 离屏模式用虚拟时间（`iTime = iFrame / --fps`），保证导出结果可复现
 - 输出目录不存在会自动创建
+- 加 `--dump-audio out.wav` 可以顺便把 Sound pass 的输出写成 WAV。离屏模式下只有不带
+  `--dump-audio` 时才跳过 Sound pass；每渲染一帧生成 0.5 秒的音频
 
 ## Shadertoy 兼容性
 

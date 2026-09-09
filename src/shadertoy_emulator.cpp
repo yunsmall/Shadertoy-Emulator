@@ -20,11 +20,12 @@ static const float QUAD_VERTICES[] = {
 
 ShadertoyEmulator::ShadertoyEmulator(const ShaderConfig& config, bool showFps, bool enableGui,
                                      bool offscreen, const FrameRange& captureRange,
-                                     const std::filesystem::path& captureDir, float offlineFps)
+                                     const std::filesystem::path& captureDir, float offlineFps,
+                                     const std::filesystem::path& audioDumpPath)
     : m_width(config.getWidth()), m_height(config.getHeight()), m_showFps(showFps),
       m_enableGui(enableGui), m_config(config), m_offscreen(offscreen),
       m_captureRange(captureRange), m_captureDir(captureDir), m_offlineFps(offlineFps),
-      m_frameCount(0) {
+      m_audioDumpPath(audioDumpPath), m_frameCount(0) {
 
     // 离屏模式没有窗口，ImGui 没有可依附的目标
     if (m_offscreen) {
@@ -136,8 +137,8 @@ void ShadertoyEmulator::initPasses() {
 
         // Sound 通道特殊处理
         if (pass->isSound) {
-            if (m_offscreen) {
-                // 离屏导出不需要音频，整个 Sound pass 跳过（也就不会生成 sound_debug.wav）
+            if (m_offscreen && m_audioDumpPath.empty()) {
+                // 离屏导出不需要音频，整个 Sound pass 跳过
                 continue;
             }
             m_soundPass = pass.get();  // 先保存指针，initSoundPass 里会用到
@@ -238,6 +239,8 @@ void ShadertoyEmulator::cacheUniformLocations(RenderPass& pass) {
     pass.locIDate = loc("iDate");
     pass.locChannelResolution = loc("iChannelResolution");
     pass.locChannelTime = loc("iChannelTime");
+    pass.locISampleRate = loc("iSampleRate");
+    pass.locISampleOffset = loc("iSampleOffset");
     for (int i = 0; i < 4; ++i) {
         pass.locChannels[i] = loc("iChannel" + std::to_string(i));
     }
@@ -392,6 +395,8 @@ void ShadertoyEmulator::run() {
     if (m_enableGui) {
         shutdownImGui();
     }
+
+    writeAudioDump();
 }
 
 void ShadertoyEmulator::runOffscreen() {
@@ -410,6 +415,8 @@ void ShadertoyEmulator::runOffscreen() {
             saved++;
         }
     }
+
+    writeAudioDump();
 
     std::cout << "Exported " << saved << " frames." << std::endl;
 }
@@ -435,6 +442,55 @@ void ShadertoyEmulator::captureFrame(int frameIndex) {
     if (!image.saveToFile(outPath)) {
         std::cerr << "Failed to save " << outPath << std::endl;
     }
+}
+
+void ShadertoyEmulator::writeAudioDump() {
+    if (m_audioDumpPath.empty()) return;
+
+    if (m_audioDumpSamples.empty()) {
+        std::cerr << "No audio to dump (config has no Sound pass?)" << std::endl;
+        return;
+    }
+
+    std::ofstream out(m_audioDumpPath, std::ios::binary);
+    if (!out) {
+        std::cerr << "Cannot open audio dump file: " << m_audioDumpPath << std::endl;
+        return;
+    }
+
+    const uint32_t dataSize = static_cast<uint32_t>(m_audioDumpSamples.size() * sizeof(int16_t));
+    const uint32_t sampleRate = SOUND_SAMPLE_RATE;
+    const uint16_t channels = 2;
+    const uint16_t bitsPerSample = 16;
+    const uint32_t byteRate = sampleRate * channels * bitsPerSample / 8;
+    const uint16_t blockAlign = channels * bitsPerSample / 8;
+
+    auto write = [&out](const void* data, std::streamsize size) {
+        out.write(static_cast<const char*>(data), size);
+    };
+
+    uint32_t chunkSize = 36 + dataSize;
+    uint32_t fmtSize = 16;
+    uint16_t audioFormat = 1;  // PCM
+
+    write("RIFF", 4);
+    write(&chunkSize, 4);
+    write("WAVE", 4);
+    write("fmt ", 4);
+    write(&fmtSize, 4);
+    write(&audioFormat, 2);
+    write(&channels, 2);
+    write(&sampleRate, 4);
+    write(&byteRate, 4);
+    write(&blockAlign, 2);
+    write(&bitsPerSample, 2);
+    write("data", 4);
+    write(&dataSize, 4);
+    write(m_audioDumpSamples.data(), static_cast<std::streamsize>(dataSize));
+
+    const size_t frames = m_audioDumpSamples.size() / 2;
+    std::cout << "Wrote audio dump: " << m_audioDumpPath << " (" << frames << " frames, "
+              << (static_cast<double>(frames) / SOUND_SAMPLE_RATE) << "s)" << std::endl;
 }
 
 void ShadertoyEmulator::handleEvents() {
@@ -1212,6 +1268,11 @@ void ShadertoyEmulator::initSoundPass(RenderPass& pass) {
 
     cacheUniformLocations(pass);
 
+    if (m_offscreen) {
+        // 导出模式只要数据，不建音频流也就不播放
+        return;
+    }
+
     // 创建音频流
     m_soundStream = std::make_unique<SoundShaderStream>();
     m_soundStream->init(SOUND_SAMPLE_RATE);
@@ -1228,7 +1289,15 @@ void ShadertoyEmulator::initSoundPass(RenderPass& pass) {
 }
 
 void ShadertoyEmulator::checkAndGenerateSound() {
-    if (!m_soundPass || !m_soundStream) return;
+    if (!m_soundPass) return;
+
+    if (m_offscreen) {
+        // 导出模式没有播放消耗，每帧固定生成一批
+        generateSoundBatch();
+        return;
+    }
+
+    if (!m_soundStream) return;
 
     // 保持至少 5 个就绪缓冲区
     if (m_soundStream->getReadyBufferCount() < 5) {
@@ -1254,16 +1323,21 @@ void ShadertoyEmulator::generateSoundBatch() {
     // 绑定 shader
     sf::Shader::bind(&m_soundPass->shader);
 
-    // 设置 uniforms
-    m_soundPass->shader.setUniform("iResolution", sf::Glsl::Vec3(static_cast<float>(batchSamples), 1.0f, 1.0f));
-    m_soundPass->shader.setUniform("iTime", iTime);
-    m_soundPass->shader.setUniform("iTimeDelta", 1.0f / SOUND_SAMPLE_RATE);
-    m_soundPass->shader.setUniform("iFrame", m_frameCount);
-    m_soundPass->shader.setUniform("iFrameRate", static_cast<float>(SOUND_SAMPLE_RATE));
-    m_soundPass->shader.setUniform("iMouse", sf::Glsl::Vec4(m_mouseDownX, m_mouseDownY, m_mouseClickX, m_mouseClickY));
-    m_soundPass->shader.setUniform("iDate", sf::Glsl::Vec4(2024.0f, 1.0f, 1.0f, 0.0f));
-    m_soundPass->shader.setUniform("iSampleRate", SOUND_SAMPLE_RATE);
-    m_soundPass->shader.setUniform("iSampleOffset", static_cast<int>(m_soundSamplePosition));
+    // 设置 uniforms，只设 shader 里真的存在的（否则 SFML 每批都刷 not found 警告）
+    RenderPass& sound = *m_soundPass;
+    if (sound.locIResolution >= 0) {
+        sound.shader.setUniform("iResolution", sf::Glsl::Vec3(static_cast<float>(batchSamples), 1.0f, 1.0f));
+    }
+    if (sound.locITime >= 0) sound.shader.setUniform("iTime", iTime);
+    if (sound.locITimeDelta >= 0) sound.shader.setUniform("iTimeDelta", 1.0f / SOUND_SAMPLE_RATE);
+    if (sound.locIFrame >= 0) sound.shader.setUniform("iFrame", m_frameCount);
+    if (sound.locIFrameRate >= 0) sound.shader.setUniform("iFrameRate", static_cast<float>(SOUND_SAMPLE_RATE));
+    if (sound.locIMouse >= 0) {
+        sound.shader.setUniform("iMouse", sf::Glsl::Vec4(m_mouseDownX, m_mouseDownY, m_mouseClickX, m_mouseClickY));
+    }
+    if (sound.locIDate >= 0) sound.shader.setUniform("iDate", sf::Glsl::Vec4(2024.0f, 1.0f, 1.0f, 0.0f));
+    if (sound.locISampleRate >= 0) sound.shader.setUniform("iSampleRate", SOUND_SAMPLE_RATE);
+    if (sound.locISampleOffset >= 0) sound.shader.setUniform("iSampleOffset", static_cast<int>(m_soundSamplePosition));
 
     // 设置 iChannel uniforms（绑定其他 Buffer 的纹理）
     for (int ch = 0; ch < 4; ++ch) {
@@ -1313,8 +1387,12 @@ void ShadertoyEmulator::generateSoundBatch() {
         audioSamples[i * 2 + 1] = static_cast<int16_t>(right * 32767);
     }
 
-    // 推送到音频流
-    m_soundStream->pushSamples(audioSamples);
+    if (m_soundStream) {
+        m_soundStream->pushSamples(audioSamples);
+    }
+    if (!m_audioDumpPath.empty()) {
+        m_audioDumpSamples.insert(m_audioDumpSamples.end(), audioSamples.begin(), audioSamples.end());
+    }
     m_soundSamplePosition += batchSamples;
 
     // 调试：保存前几批到WAV文件

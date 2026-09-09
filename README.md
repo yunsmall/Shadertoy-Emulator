@@ -58,6 +58,7 @@ ShadertoyEmulator config.json
 | `--frames <start:stop:step>` | Save matching frames as PNG (Python slice syntax; `stop` required and excluded) |
 | `--output-dir <dir>` | Directory for saved frames (default: current directory) |
 | `--offscreen` | Offscreen rendering: no window, no ImGui, no audio, no input (requires `--frames`) |
+| `--dump-audio <file.wav>` | Write Sound pass output to a WAV file (works with `--offscreen` too) |
 | `--fps <n>` | Virtual frame rate for offscreen rendering (default: 60) |
 | `--builtin-preprocessor` | Use built-in GLSL preprocessor |
 
@@ -112,6 +113,8 @@ ShadertoyEmulator config.json --frames 0:300:2 --output-dir frames/
 - Files are named `%05d.png` with the absolute frame index (`00000.png`, `00002.png`, …).
 - Offscreen mode uses virtual time (`iTime = iFrame / --fps`) so exports are reproducible.
 - The output directory is created if it does not exist.
+- Add `--dump-audio out.wav` to also write the Sound pass output. In offscreen mode the Sound pass
+  is only skipped when no `--dump-audio` is given; each rendered frame produces one 0.5 s audio batch.
 
 ## Shadertoy Compatibility
 
