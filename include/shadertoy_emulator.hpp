@@ -75,6 +75,7 @@ private:
     void beginFrame();  // 每帧开头算一次时间，保证所有 pass 看到同一份 iTime/iFrame
     void cacheUniformLocations(RenderPass& pass);  // 编译后查一次 location，之后按需设置
     void updateUniforms(RenderPass& pass, int width, int height);
+    sf::Glsl::Vec4 mouseUniform() const;  // iMouse 的 z/w 靠符号位编码状态，所有 pass 必须用同一份
     void resizeFramebuffers();
     void renderPasses();
     void renderPass(RenderPass& pass);

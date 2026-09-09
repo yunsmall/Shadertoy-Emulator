@@ -612,6 +612,14 @@ void ShadertoyEmulator::beginFrame() {
     m_frameIndex = m_frameCount;
 }
 
+// iMouse 的 z/w 靠符号位编码状态：负值表示按钮已松开 / 本帧没点击。
+// Image、Buffer、Sound 的 iMouse 语义在 Shadertoy 里是同一套，所以必须共用这份编码。
+sf::Glsl::Vec4 ShadertoyEmulator::mouseUniform() const {
+    float z = m_mouseDown ? m_mouseClickX : -m_mouseClickX;
+    float w = m_mouseJustClicked ? m_mouseClickY : -m_mouseClickY;
+    return sf::Glsl::Vec4(m_mouseDownX, m_mouseDownY, z, w);
+}
+
 void ShadertoyEmulator::updateUniforms(RenderPass& pass, int width, int height) {
     float iFrameRate = (m_frameTimeDelta > 0) ? 1.0f / m_frameTimeDelta : 60.0f;
 
@@ -627,14 +635,8 @@ void ShadertoyEmulator::updateUniforms(RenderPass& pass, int width, int height) 
     if (pass.locIFrame >= 0) shader.setUniform("iFrame", m_frameIndex);
     if (pass.locIFrameRate >= 0) shader.setUniform("iFrameRate", iFrameRate);
 
-    // iMouse:
-    // xy = 按下时的位置
-    // z = 按下 ? 点击位置 : -点击位置
-    // w = 刚点击 ? 点击位置 : -点击位置
     if (pass.locIMouse >= 0) {
-        float z = m_mouseDown ? m_mouseClickX : -m_mouseClickX;
-        float w = m_mouseJustClicked ? m_mouseClickY : -m_mouseClickY;
-        shader.setUniform("iMouse", sf::Glsl::Vec4(m_mouseDownX, m_mouseDownY, z, w));
+        shader.setUniform("iMouse", mouseUniform());
     }
 
     if (pass.locIDate >= 0) {
@@ -1333,7 +1335,7 @@ void ShadertoyEmulator::generateSoundBatch() {
     if (sound.locIFrame >= 0) sound.shader.setUniform("iFrame", m_frameCount);
     if (sound.locIFrameRate >= 0) sound.shader.setUniform("iFrameRate", static_cast<float>(SOUND_SAMPLE_RATE));
     if (sound.locIMouse >= 0) {
-        sound.shader.setUniform("iMouse", sf::Glsl::Vec4(m_mouseDownX, m_mouseDownY, m_mouseClickX, m_mouseClickY));
+        sound.shader.setUniform("iMouse", mouseUniform());
     }
     if (sound.locIDate >= 0) sound.shader.setUniform("iDate", sf::Glsl::Vec4(2024.0f, 1.0f, 1.0f, 0.0f));
     if (sound.locISampleRate >= 0) sound.shader.setUniform("iSampleRate", SOUND_SAMPLE_RATE);

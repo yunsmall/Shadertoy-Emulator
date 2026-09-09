@@ -132,9 +132,38 @@ ShadertoyEmulator config.json --frames 0:300:2 --output-dir frames/
 | `iChannel0-3` | sampler2D | 输入通道 |
 | `iChannelResolution` | vec3[4] | 通道分辨率 |
 
+### 坐标系与方向
+
+所有像素坐标都和 Shadertoy / OpenGL 一致：**原点在左下角，y 轴向上**。
+
+```glsl
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    vec2 uv = fragCoord / iResolution.xy;   // 左下 (0,0)，右上 (1,1)
+    fragColor = vec4(uv, 0.0, 1.0);         // 左下黑，右上黄
+}
+```
+
+| 量 | 坐标系 |
+|---|---|
+| `fragCoord` | 当前 pass 的渲染目标，左下原点，y 向上 |
+| `iResolution.xy` | 当前 pass 的渲染目标尺寸：Image 通道是窗口尺寸，Buffer 通道是 config 里写的 `width`/`height`（省略则等于窗口） |
+| `iMouse.xy` | **窗口**像素，左下原点，y 向上。与 Image 通道的 `fragCoord` 同尺度；Buffer 通道分辨率与窗口不同时需自行按比例换算 |
+| 纹理 `iChannel0-3` | `texture()` 的 uv 与 `fragCoord/iResolution` 同向，但归一化到该纹理自己的尺寸；像素尺寸见 `iChannelResolution[i]` |
+| 键盘纹理 | y=0/1/2 三行，见"键盘纹理格式" |
+
+**纹理方向**：`type: "texture"` 默认（`flipY: false`）会让图片上下颠倒——`texture(iChannel0, vec2(0.5, 0.0))` 取到的是图片**顶边**那一行。想让 `uv` 和看图软件里的方向一致，加 `"flipY": true`，此时 `uv.y` 越大越靠图片上方：
+
+```json
+"0": { "type": "texture", "source": "photo.png", "flipY": true }
+```
+
+**导出 PNG**：`--frames` 保存的 PNG 已经翻正，和 shader 里 `uv` 的方向一致（`uv.y` 大的位置在 PNG 上方），不用再自己翻转。
+
+**离屏模式**：`--offscreen` 下没有输入，`iMouse` 恒为 `vec4(0)`，键盘纹理全 0。
+
 ### iMouse 格式
 
-- `iMouse.xy` = 按下时的鼠标位置
+- `iMouse.xy` = 按住时的鼠标位置（拖拽中实时更新，松开后停在最后位置）
 - `abs(iMouse.zw)` = 点击时的鼠标位置
 - `sign(iMouse.z)` = 按钮是否按下（正=按下）
 - `sign(iMouse.w)` = 是否刚点击（正=刚点击）

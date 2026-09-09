@@ -132,9 +132,38 @@ ShadertoyEmulator config.json --frames 0:300:2 --output-dir frames/
 | `iChannel0-3` | sampler2D | Input channels |
 | `iChannelResolution` | vec3[4] | Channel resolutions |
 
+### Coordinate System and Orientation
+
+All pixel coordinates follow Shadertoy / OpenGL: **origin at the bottom-left, y axis pointing up**.
+
+```glsl
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    vec2 uv = fragCoord / iResolution.xy;   // (0,0) bottom-left, (1,1) top-right
+    fragColor = vec4(uv, 0.0, 1.0);         // black bottom-left, yellow top-right
+}
+```
+
+| Value | Coordinate system |
+|---|---|
+| `fragCoord` | Current pass's render target, bottom-left origin, y up |
+| `iResolution.xy` | Current pass's render target size: window size for the Image pass, the `width`/`height` from config for Buffer passes (falls back to window size) |
+| `iMouse.xy` | **Window** pixels, bottom-left origin, y up. Same scale as `fragCoord` in the Image pass; Buffer passes with a different resolution must rescale it themselves |
+| Texture `iChannel0-3` | `texture()` uv runs the same way as `fragCoord/iResolution`, but normalized to that texture's own size; pixel size is in `iChannelResolution[i]` |
+| Keyboard texture | Rows y=0/1/2, see "Keyboard Texture Format" |
+
+**Texture orientation**: `type: "texture"` with the default (`flipY: false`) flips the image vertically — `texture(iChannel0, vec2(0.5, 0.0))` samples the **top** row of the image. Add `"flipY": true` to make `uv` match what you see in an image viewer, so a larger `uv.y` is closer to the top of the image:
+
+```json
+"0": { "type": "texture", "source": "photo.png", "flipY": true }
+```
+
+**Exported PNGs**: frames saved by `--frames` are already flipped upright, matching the `uv` orientation in your shader (a larger `uv.y` is toward the top of the PNG), so no extra flip is needed.
+
+**Offscreen mode**: `--offscreen` has no input, so `iMouse` is always `vec4(0)` and the keyboard texture is all zeros.
+
 ### iMouse Format
 
-- `iMouse.xy` = Mouse position during last button down
+- `iMouse.xy` = Mouse position while the button is down (updated as you drag, stays put after release)
 - `abs(iMouse.zw)` = Mouse position during last click
 - `sign(iMouse.z)` = Button is down (positive if down)
 - `sign(iMouse.w)` = Just clicked (positive if clicked this frame)
