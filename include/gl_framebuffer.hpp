@@ -76,7 +76,7 @@ public:
 
     ~GLFramebuffer() { destroy(); }
 
-    bool create(int w, int h) {
+    bool create(int w, int h, GLenum internalFormat = GL_RGBA32F) {
         if (w <= 0 || h <= 0) return false;
 
         destroy();
@@ -85,11 +85,12 @@ public:
         glGenFramebuffers(1, &fbo);
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
 
-        // 创建浮点纹理 (GL_RGBA32F)
+        // 创建颜色纹理。默认浮点，让 Buffer 之间能传 HDR 中间结果；
+        // 离屏导出用 GL_RGBA8，这样 glReadPixels 能直接读 GL_UNSIGNED_BYTE
         glGenTextures(1, &colorTex.id);
         glBindTexture(GL_TEXTURE_2D, colorTex.id);
 
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, w, h, 0, GL_RGBA, GL_FLOAT, nullptr);
+        glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, w, h, 0, GL_RGBA, GL_FLOAT, nullptr);
 
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);

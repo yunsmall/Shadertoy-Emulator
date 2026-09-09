@@ -6,6 +6,8 @@
 #include <iomanip>
 #include <iostream>
 #include <ctime>
+#include <cmath>
+#include <stdexcept>
 
 // 全屏四边形顶点数据
 static const float QUAD_VERTICES[] = {
@@ -16,29 +18,48 @@ static const float QUAD_VERTICES[] = {
      1.0f,  1.0f
 };
 
-ShadertoyEmulator::ShadertoyEmulator(const ShaderConfig& config, bool showFps, bool enableGui)
+ShadertoyEmulator::ShadertoyEmulator(const ShaderConfig& config, bool showFps, bool enableGui,
+                                     bool offscreen, const FrameRange& captureRange,
+                                     const std::filesystem::path& captureDir, float offlineFps)
     : m_width(config.getWidth()), m_height(config.getHeight()), m_showFps(showFps),
-      m_enableGui(enableGui), m_config(config), m_frameCount(0) {
+      m_enableGui(enableGui), m_config(config), m_offscreen(offscreen),
+      m_captureRange(captureRange), m_captureDir(captureDir), m_offlineFps(offlineFps),
+      m_frameCount(0) {
 
-    // 创建窗口
-    uint32_t windowStyle = m_config.isResizable()
-        ? sf::Style::Default
-        : (sf::Style::Titlebar | sf::Style::Close);
-    m_window.create(sf::VideoMode({static_cast<unsigned int>(m_width),
-                                    static_cast<unsigned int>(m_height)}),
-                    m_config.getName().empty() ? "Shadertoy Emulator" : m_config.getName(),
-                    windowStyle);
-    m_window.setFramerateLimit(60);
+    // 离屏模式没有窗口，ImGui 没有可依附的目标
+    if (m_offscreen) {
+        m_enableGui = false;
+    }
+
+    if (m_offscreen) {
+        // sf::Context 构造即创建并激活一个不依附窗口的 OpenGL 上下文
+        m_context = std::make_unique<sf::Context>();
+    } else {
+        uint32_t windowStyle = m_config.isResizable()
+            ? sf::Style::Default
+            : (sf::Style::Titlebar | sf::Style::Close);
+        m_window.create(sf::VideoMode({static_cast<unsigned int>(m_width),
+                                        static_cast<unsigned int>(m_height)}),
+                        m_config.getName().empty() ? "Shadertoy Emulator" : m_config.getName(),
+                        windowStyle);
+        m_window.setFramerateLimit(60);
+    }
 
     // 初始化 glad（必须在创建 OpenGL 上下文后）
     if (!gladLoadGL()) {
-        std::cerr << "Failed to initialize GLAD" << std::endl;
-        return;
+        throw std::runtime_error("Failed to initialize GLAD");
     }
     std::cout << "OpenGL " << GLVersion.major << "." << GLVersion.minor << std::endl;
 
     // 初始化 OpenGL 顶点数据
     initQuad();
+
+    // 所有 pass 的结果都先画进这个输出目标，之后要么截图、要么贴到窗口。
+    // 这样截图不依赖窗口的 back buffer（窗口最小化时它是 0×0）。
+    m_outputTarget = std::make_unique<GLFramebuffer>();
+    if (!m_outputTarget->create(m_width, m_height, GL_RGBA8)) {
+        throw std::runtime_error("Failed to create output render target");
+    }
 
     // 初始化键盘纹理
     initKeyboardTexture();
@@ -115,6 +136,10 @@ void ShadertoyEmulator::initPasses() {
 
         // Sound 通道特殊处理
         if (pass->isSound) {
+            if (m_offscreen) {
+                // 离屏导出不需要音频，整个 Sound pass 跳过（也就不会生成 sound_debug.wav）
+                continue;
+            }
             m_soundPass = pass.get();  // 先保存指针，initSoundPass 里会用到
             initSoundPass(*pass);
             m_passMap[pass->name] = pass.get();
@@ -192,8 +217,30 @@ bool ShadertoyEmulator::loadShader(RenderPass& pass, const PassConfig& config) {
         return false;
     }
 
+    cacheUniformLocations(pass);
+
     std::cout << "Loaded shader: " << fullPath << std::endl;
     return true;
+}
+
+void ShadertoyEmulator::cacheUniformLocations(RenderPass& pass) {
+    const GLuint program = pass.shader.getNativeHandle();
+    auto loc = [program](const std::string& name) {
+        return glGetUniformLocation(program, name.c_str());
+    };
+
+    pass.locIResolution = loc("iResolution");
+    pass.locITime = loc("iTime");
+    pass.locITimeDelta = loc("iTimeDelta");
+    pass.locIFrame = loc("iFrame");
+    pass.locIFrameRate = loc("iFrameRate");
+    pass.locIMouse = loc("iMouse");
+    pass.locIDate = loc("iDate");
+    pass.locChannelResolution = loc("iChannelResolution");
+    pass.locChannelTime = loc("iChannelTime");
+    for (int i = 0; i < 4; ++i) {
+        pass.locChannels[i] = loc("iChannel" + std::to_string(i));
+    }
 }
 
 std::string ShadertoyEmulator::wrapProcessedShader(const std::string& processedCode) {
@@ -269,11 +316,32 @@ std::string ShadertoyEmulator::wrapShader(const std::string& userCode) {
 }
 
 void ShadertoyEmulator::run() {
+    // 导出目录两种模式都要用，统一在这里准备
+    if (m_captureRange.stop > 0) {
+        std::error_code ec;
+        std::filesystem::create_directories(m_captureDir, ec);
+        if (ec) {
+            std::cerr << "Cannot create output directory: " << m_captureDir
+                      << " (" << ec.message() << ")" << std::endl;
+            return;
+        }
+    }
+
+    if (m_offscreen) {
+        runOffscreen();
+        return;
+    }
+
     sf::Clock clock;
     sf::Clock fpsClock;
     sf::Clock imguiDeltaClock;
 
     while (m_window.isOpen()) {
+        // 指定了帧范围时，跑完就退出
+        if (m_captureRange.stop > 0 && m_frameCount >= m_captureRange.stop) {
+            break;
+        }
+
         // 计算当前 FPS
         float deltaTime = fpsClock.restart().asSeconds();
         m_currentFps = deltaTime > 0 ? 1.0f / deltaTime : 0.0f;
@@ -289,6 +357,16 @@ void ShadertoyEmulator::run() {
 
         // 渲染到屏幕 (OpenGL)
         renderToScreen();
+
+        // 截图读的是输出目标，本来就不含 ImGui
+        if (shouldRender && m_captureRange.contains(m_frameIndex)) {
+            captureFrame(m_frameIndex);
+        }
+
+        // iMouse.w 只表示"本帧刚点击"，所有 pass 都渲染完再清
+        if (shouldRender) {
+            m_mouseJustClicked = false;
+        }
 
         // ImGui 更新和渲染
         if (m_enableGui) {
@@ -313,6 +391,49 @@ void ShadertoyEmulator::run() {
 
     if (m_enableGui) {
         shutdownImGui();
+    }
+}
+
+void ShadertoyEmulator::runOffscreen() {
+    std::cout << "Offscreen export: frames [" << m_captureRange.start << ", "
+              << m_captureRange.stop << ") step " << m_captureRange.step
+              << " (" << m_captureRange.count() << " images) -> "
+              << std::filesystem::absolute(m_captureDir) << std::endl;
+
+    int saved = 0;
+    while (m_frameCount < m_captureRange.stop) {
+        renderPasses();
+        renderToScreen();
+
+        if (m_captureRange.contains(m_frameIndex)) {
+            captureFrame(m_frameIndex);
+            saved++;
+        }
+    }
+
+    std::cout << "Exported " << saved << " frames." << std::endl;
+}
+
+void ShadertoyEmulator::captureFrame(int frameIndex) {
+    if (!m_outputTarget || m_outputTarget->fbo == 0 || m_width <= 0 || m_height <= 0) return;
+
+    std::vector<uint8_t> pixels(static_cast<size_t>(m_width) * static_cast<size_t>(m_height) * 4);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, m_outputTarget->fbo);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, m_width, m_height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    // glReadPixels 是 bottom-up，sf::Image 期望 top-down
+    sf::Image image(sf::Vector2u(static_cast<unsigned>(m_width), static_cast<unsigned>(m_height)),
+                    pixels.data());
+    image.flipVertically();
+
+    std::ostringstream name;
+    name << std::setfill('0') << std::setw(5) << frameIndex << ".png";
+
+    std::filesystem::path outPath = m_captureDir / name.str();
+    if (!image.saveToFile(outPath)) {
+        std::cerr << "Failed to save " << outPath << std::endl;
     }
 }
 
@@ -408,56 +529,80 @@ void ShadertoyEmulator::handleEvents() {
     }
 }
 
-void ShadertoyEmulator::updateUniforms(sf::Shader& shader, int width, int height) {
-    auto now = std::chrono::high_resolution_clock::now();
-
-    // 处理暂停状态
-    float iTime;
-    float iTimeDelta;
-    if (m_paused) {
-        iTime = m_pausedTime;
-        iTimeDelta = m_pausedTimeDelta;  // 使用保存的值
+void ShadertoyEmulator::beginFrame() {
+    if (m_offscreen) {
+        // 离屏没有 vsync 限帧，用虚拟时间，否则 iTime 几乎不涨、动画会静止
+        m_frameTime = static_cast<float>(m_frameCount) / m_offlineFps;
+        m_frameTimeDelta = 1.0f / m_offlineFps;
+        // iDate 也用固定纪元 + 虚拟秒，否则同一命令每次导出的结果都不一样
+        m_frameDate = {2024.0f, 1.0f, 1.0f, std::fmod(m_frameTime, 86400.0f)};
+    } else if (m_paused) {
+        m_frameTime = m_pausedTime;
+        m_frameTimeDelta = m_pausedTimeDelta;  // 使用保存的值
+        // 暂停期间 iDate 保持上一次的值
     } else {
-        iTime = std::chrono::duration<float>(now - m_startTime).count();
-        iTimeDelta = std::chrono::duration<float>(now - m_lastFrameTime).count();
+        auto now = std::chrono::high_resolution_clock::now();
+        m_frameTime = std::chrono::duration<float>(now - m_startTime).count();
+        m_frameTimeDelta = std::chrono::duration<float>(now - m_lastFrameTime).count();
+
+        std::time_t t = std::time(nullptr);
+        std::tm* tm = std::localtime(&t);
+        m_frameDate = {static_cast<float>(tm->tm_year + 1900),
+                       static_cast<float>(tm->tm_mon + 1),
+                       static_cast<float>(tm->tm_mday),
+                       static_cast<float>(tm->tm_hour * 3600 + tm->tm_min * 60 + tm->tm_sec)};
     }
 
-    float iFrameRate = (iTimeDelta > 0) ? 1.0f / iTimeDelta : 60.0f;
+    m_frameIndex = m_frameCount;
+}
 
-    std::time_t t = std::time(nullptr);
-    std::tm* tm = std::localtime(&t);
-    float iDateYear = static_cast<float>(tm->tm_year + 1900);
-    float iDateMonth = static_cast<float>(tm->tm_mon + 1);
-    float iDateDay = static_cast<float>(tm->tm_mday);
-    float iDateSec = static_cast<float>(tm->tm_hour * 3600 + tm->tm_min * 60 + tm->tm_sec);
+void ShadertoyEmulator::updateUniforms(RenderPass& pass, int width, int height) {
+    float iFrameRate = (m_frameTimeDelta > 0) ? 1.0f / m_frameTimeDelta : 60.0f;
 
+    sf::Shader& shader = pass.shader;
     sf::Shader::bind(&shader);
-    shader.setUniform("iResolution", sf::Glsl::Vec3(static_cast<float>(width),
-                                                      static_cast<float>(height), 1.0f));
-    shader.setUniform("iTime", iTime);
-    shader.setUniform("iTimeDelta", iTimeDelta);
-    shader.setUniform("iFrame", m_frameCount);
-    shader.setUniform("iFrameRate", iFrameRate);
+
+    if (pass.locIResolution >= 0) {
+        shader.setUniform("iResolution", sf::Glsl::Vec3(static_cast<float>(width),
+                                                          static_cast<float>(height), 1.0f));
+    }
+    if (pass.locITime >= 0) shader.setUniform("iTime", m_frameTime);
+    if (pass.locITimeDelta >= 0) shader.setUniform("iTimeDelta", m_frameTimeDelta);
+    if (pass.locIFrame >= 0) shader.setUniform("iFrame", m_frameIndex);
+    if (pass.locIFrameRate >= 0) shader.setUniform("iFrameRate", iFrameRate);
 
     // iMouse:
     // xy = 按下时的位置
     // z = 按下 ? 点击位置 : -点击位置
     // w = 刚点击 ? 点击位置 : -点击位置
-    float z = m_mouseDown ? m_mouseClickX : -m_mouseClickX;
-    float w = m_mouseJustClicked ? m_mouseClickY : -m_mouseClickY;
-    shader.setUniform("iMouse", sf::Glsl::Vec4(m_mouseDownX, m_mouseDownY, z, w));
-
-    shader.setUniform("iDate", sf::Glsl::Vec4(iDateYear, iDateMonth, iDateDay, iDateSec));
-
-    // iChannelTime[4]
-    std::array<float, 4> channelTimeValues;
-    for (int i = 0; i < 4; ++i) {
-        channelTimeValues[i] = iTime;
+    if (pass.locIMouse >= 0) {
+        float z = m_mouseDown ? m_mouseClickX : -m_mouseClickX;
+        float w = m_mouseJustClicked ? m_mouseClickY : -m_mouseClickY;
+        shader.setUniform("iMouse", sf::Glsl::Vec4(m_mouseDownX, m_mouseDownY, z, w));
     }
-    shader.setUniformArray("iChannelTime", channelTimeValues.data(), 4);
+
+    if (pass.locIDate >= 0) {
+        shader.setUniform("iDate", sf::Glsl::Vec4(m_frameDate[0], m_frameDate[1],
+                                                   m_frameDate[2], m_frameDate[3]));
+    }
+
+    if (pass.locChannelTime >= 0) {
+        std::array<float, 4> channelTimeValues;
+        for (int i = 0; i < 4; ++i) {
+            channelTimeValues[i] = m_frameTime;
+        }
+        shader.setUniformArray("iChannelTime", channelTimeValues.data(), 4);
+    }
 }
 
 void ShadertoyEmulator::resizeFramebuffers() {
+    // 输出目标也要跟着窗口尺寸走
+    if (m_outputTarget) {
+        if (!m_outputTarget->create(m_width, m_height, GL_RGBA8)) {
+            std::cerr << "Failed to resize output target" << std::endl;
+        }
+    }
+
     for (auto& pass : m_passes) {
         // 只调整使用窗口分辨率的 Buffer pass
         if (!pass->isImage && pass->useWindowResolution) {
@@ -483,6 +628,10 @@ void ShadertoyEmulator::resizeFramebuffers() {
 }
 
 void ShadertoyEmulator::renderPasses() {
+    // 先定好本帧的时间，后面的 buffer pass 和 image pass 都用这一份，
+    // 否则 m_frameCount 自增会让两者差一整帧
+    beginFrame();
+
     // 更新键盘纹理
     updateKeyboardTexture();
 
@@ -498,9 +647,6 @@ void ShadertoyEmulator::renderPasses() {
 
     m_lastFrameTime = std::chrono::high_resolution_clock::now();
     m_frameCount++;
-
-    // 清除刚点击标记（只持续一帧）
-    m_mouseJustClicked = false;
 }
 
 GLTexture* ShadertoyEmulator::getChannelTexture(const ChannelInput& input) {
@@ -671,10 +817,9 @@ void ShadertoyEmulator::renderPass(RenderPass& pass) {
     sf::Shader::bind(&pass.shader);
 
     // 设置 uniforms
-    updateUniforms(pass.shader, pass.width, pass.height);
+    updateUniforms(pass, pass.width, pass.height);
 
     // 手动绑定纹理通道
-    GLuint shaderId = pass.shader.getNativeHandle();
     std::array<sf::Glsl::Vec3, 4> channelResolutions;
 
     for (int i = 0; i < 4; ++i) {
@@ -694,8 +839,7 @@ void ShadertoyEmulator::renderPass(RenderPass& pass) {
                     tex->mipmapDirty = false;
                 }
 
-                GLint loc = glGetUniformLocation(shaderId, ("iChannel" + std::to_string(i)).c_str());
-                glUniform1i(loc, i);
+                glUniform1i(pass.locChannels[i], i);  // location 为 -1 时 glUniform 是 no-op
                 channelResolutions[i] = sf::Glsl::Vec3(
                     static_cast<float>(tex->width),
                     static_cast<float>(tex->height), 1.0f);
@@ -704,7 +848,9 @@ void ShadertoyEmulator::renderPass(RenderPass& pass) {
             channelResolutions[i] = sf::Glsl::Vec3(0.0f, 0.0f, 0.0f);
         }
     }
-    pass.shader.setUniformArray("iChannelResolution", channelResolutions.data(), 4);
+    if (pass.locChannelResolution >= 0) {
+        pass.shader.setUniformArray("iChannelResolution", channelResolutions.data(), 4);
+    }
 
     // 渲染全屏四边形
     glBindVertexArray(m_vao);
@@ -727,8 +873,9 @@ void ShadertoyEmulator::renderPass(RenderPass& pass) {
 }
 
 void ShadertoyEmulator::renderToScreen() {
-    // 绑定默认 FBO（窗口）
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    // 渲染到输出目标而不是直接画到窗口：截图和显示共用同一份内容，
+    // 也避免直接读窗口的 back buffer（窗口最小化时它是 0×0）
+    m_outputTarget->bind();
     glViewport(0, 0, m_width, m_height);
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -737,9 +884,8 @@ void ShadertoyEmulator::renderToScreen() {
     for (auto& pass : m_passes) {
         if (pass->isImage) {
             sf::Shader::bind(&pass->shader);
-            updateUniforms(pass->shader, m_width, m_height);
+            updateUniforms(*pass, m_width, m_height);
 
-            GLuint shaderId = pass->shader.getNativeHandle();
             std::array<sf::Glsl::Vec3, 4> channelResolutions;
 
             for (int i = 0; i < 4; ++i) {
@@ -759,8 +905,7 @@ void ShadertoyEmulator::renderToScreen() {
                             tex->mipmapDirty = false;
                         }
 
-                        GLint loc = glGetUniformLocation(shaderId, ("iChannel" + std::to_string(i)).c_str());
-                        glUniform1i(loc, i);
+                        glUniform1i(pass->locChannels[i], i);  // location 为 -1 时 glUniform 是 no-op
                         channelResolutions[i] = sf::Glsl::Vec3(
                             static_cast<float>(tex->width),
                             static_cast<float>(tex->height), 1.0f);
@@ -771,7 +916,9 @@ void ShadertoyEmulator::renderToScreen() {
                     channelResolutions[i] = sf::Glsl::Vec3(0.0f, 0.0f, 0.0f);
                 }
             }
-            pass->shader.setUniformArray("iChannelResolution", channelResolutions.data(), 4);
+            if (pass->locChannelResolution >= 0) {
+                pass->shader.setUniformArray("iChannelResolution", channelResolutions.data(), 4);
+            }
 
             // 渲染全屏四边形
             glBindVertexArray(m_vao);
@@ -788,7 +935,28 @@ void ShadertoyEmulator::renderToScreen() {
     }
 
     sf::Shader::bind(nullptr);
+
+    // 离屏模式没有窗口可贴
+    if (!m_offscreen) {
+        presentToWindow();
+    }
     // display() 由 run() 统一调用，以支持 ImGui
+}
+
+void ShadertoyEmulator::presentToWindow() {
+    const sf::Vector2u windowSize = m_window.getSize();
+    const int dstW = static_cast<int>(windowSize.x);
+    const int dstH = static_cast<int>(windowSize.y);
+    if (dstW <= 0 || dstH <= 0) return;  // 最小化时窗口的 framebuffer 是 0×0
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, m_outputTarget->fbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glDisable(GL_SCISSOR_TEST);  // blit 受 draw framebuffer 的 scissor 影响，ImGui 可能留下状态
+    glBlitFramebuffer(0, 0, m_width, m_height,
+                      0, 0, dstW, dstH,
+                      GL_COLOR_BUFFER_BIT,
+                      (dstW == m_width && dstH == m_height) ? GL_NEAREST : GL_LINEAR);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);  // 恢复默认，ImGui/SFML 需要 FBO 0
 }
 
 void ShadertoyEmulator::initKeyboardTexture() {
@@ -1042,6 +1210,8 @@ void ShadertoyEmulator::initSoundPass(RenderPass& pass) {
         return;
     }
 
+    cacheUniformLocations(pass);
+
     // 创建音频流
     m_soundStream = std::make_unique<SoundShaderStream>();
     m_soundStream->init(SOUND_SAMPLE_RATE);
@@ -1104,7 +1274,9 @@ void ShadertoyEmulator::generateSoundBatch() {
                 glActiveTexture(GL_TEXTURE0 + ch);
                 glBindTexture(GL_TEXTURE_2D, tex->id);
                 glBindSampler(ch, getSampler(m_soundPass->channels[ch]->filter, m_soundPass->channels[ch]->wrap));
-                m_soundPass->shader.setUniform(uniformName, sf::Shader::CurrentTexture);
+                if (m_soundPass->locChannels[ch] >= 0) {
+                    m_soundPass->shader.setUniform(uniformName, sf::Shader::CurrentTexture);
+                }
             }
         }
     }
@@ -1114,7 +1286,9 @@ void ShadertoyEmulator::generateSoundBatch() {
     for (int i = 0; i < 4; ++i) {
         channelTimeValues[i] = iTime;
     }
-    m_soundPass->shader.setUniformArray("iChannelTime", channelTimeValues.data(), 4);
+    if (m_soundPass->locChannelTime >= 0) {
+        m_soundPass->shader.setUniformArray("iChannelTime", channelTimeValues.data(), 4);
+    }
 
     // 渲染
     glBindVertexArray(m_vao);

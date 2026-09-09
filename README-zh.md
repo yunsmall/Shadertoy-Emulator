@@ -53,7 +53,12 @@ ShadertoyEmulator config.json
 |------|------|
 | `--width <n>` | 覆盖窗口宽度 |
 | `--height <n>` | 覆盖窗口高度 |
-| `--fps` | 在控制台显示帧率 |
+| `--show-fps` | 在控制台显示帧率 |
+| `--gui` / `--no-gui` | 强制开启 / 关闭 ImGui 面板（覆盖配置） |
+| `--frames <start:stop:step>` | 把匹配的帧保存为 PNG（Python 切片语法，`stop` 必填且不含） |
+| `--output-dir <dir>` | 保存目录（默认当前目录） |
+| `--offscreen` | 离屏渲染：无窗口、无 ImGui、无音频、无输入（需搭配 `--frames`） |
+| `--fps <n>` | 离屏渲染的虚拟帧率（默认 60） |
 | `--builtin-preprocessor` | 使用内置 GLSL 预处理器 |
 
 ## 配置文件
@@ -90,6 +95,23 @@ ShadertoyEmulator config.json
 ```
 
 详细配置说明请参阅 [shaders/JSON_CONFIG.md](shaders/JSON_CONFIG.md)。
+
+## 帧序列导出
+
+把指定范围的帧保存成 PNG 序列：
+
+```bash
+# 离屏：无窗口、无 ImGui、无音频、无输入，跑完自动退出
+ShadertoyEmulator config.json --offscreen --frames 0:300:2 --output-dir frames/ --fps 30
+
+# 交互模式：一切照常，但保存的 PNG 里不含 ImGui 面板
+ShadertoyEmulator config.json --frames 0:300:2 --output-dir frames/
+```
+
+- `--frames` 用 Python 切片语法：`0:300:2` 表示保存第 0、2、4、…、298 帧（`stop` 不含且必填）
+- 文件名为 `%05d.png`，用绝对帧号（`00000.png`、`00002.png`…）
+- 离屏模式用虚拟时间（`iTime = iFrame / --fps`），保证导出结果可复现
+- 输出目录不存在会自动创建
 
 ## Shadertoy 兼容性
 

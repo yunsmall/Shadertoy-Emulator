@@ -53,7 +53,12 @@ ShadertoyEmulator config.json
 |----------|-------------|
 | `--width <n>` | Override window width |
 | `--height <n>` | Override window height |
-| `--fps` | Display frame rate in console |
+| `--show-fps` | Display frame rate in console |
+| `--gui` / `--no-gui` | Force-enable / disable the ImGui panel (overrides config) |
+| `--frames <start:stop:step>` | Save matching frames as PNG (Python slice syntax; `stop` required and excluded) |
+| `--output-dir <dir>` | Directory for saved frames (default: current directory) |
+| `--offscreen` | Offscreen rendering: no window, no ImGui, no audio, no input (requires `--frames`) |
+| `--fps <n>` | Virtual frame rate for offscreen rendering (default: 60) |
 | `--builtin-preprocessor` | Use built-in GLSL preprocessor |
 
 ## Configuration
@@ -90,6 +95,23 @@ Create a `config.json` to configure multi-pass shaders:
 ```
 
 For detailed configuration, see [shaders/JSON_CONFIG.md](shaders/JSON_CONFIG.md).
+
+## Frame Export
+
+Save a frame range as a PNG sequence:
+
+```bash
+# Offscreen: no window, no ImGui, no audio, no input. Exits when the range is done.
+ShadertoyEmulator config.json --offscreen --frames 0:300:2 --output-dir frames/ --fps 30
+
+# Interactive: everything runs as usual, but the saved PNGs contain no ImGui overlay.
+ShadertoyEmulator config.json --frames 0:300:2 --output-dir frames/
+```
+
+- `--frames` uses Python slice syntax: `0:300:2` saves frames 0, 2, 4, …, 298 (`stop` is excluded and required).
+- Files are named `%05d.png` with the absolute frame index (`00000.png`, `00002.png`, …).
+- Offscreen mode uses virtual time (`iTime = iFrame / --fps`) so exports are reproducible.
+- The output directory is created if it does not exist.
 
 ## Shadertoy Compatibility
 

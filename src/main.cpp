@@ -5,6 +5,7 @@
 #include "shader_config.hpp"
 #include "shadertoy_emulator.hpp"
 #include "glsl_preprocessor.hpp"
+#include "frame_range.hpp"
 
 int main(int argc, char* argv[]) {
     cxxopts::Options options("ShadertoyEmulator", "Shadertoy Emulator - SFML 3");
@@ -12,9 +13,13 @@ int main(int argc, char* argv[]) {
     options.add_options()
         ("w,width", "Window width (overrides config)", cxxopts::value<int>()->default_value(std::to_string(ShaderConfig::DEFAULT_WIDTH)))
         ("h,height", "Window height (overrides config)", cxxopts::value<int>()->default_value(std::to_string(ShaderConfig::DEFAULT_HEIGHT)))
-        ("fps", "Show FPS in console")
+        ("show-fps", "Show FPS in console")
+        ("fps", "Virtual frame rate for offscreen rendering (default: 60)", cxxopts::value<int>()->default_value("60"))
         ("gui", "Enable GUI (overrides config)")
         ("no-gui", "Disable GUI (overrides config)")
+        ("frames", "Frame range to save as PNG, Python slice syntax, e.g. 0:100:2 (stop required, excluded)", cxxopts::value<std::string>())
+        ("output-dir", "Directory for saved frames (default: current directory)", cxxopts::value<std::string>()->default_value("."))
+        ("offscreen", "Offscreen rendering: no window, no ImGui, no audio, no input (requires --frames)")
         ("builtin-preprocessor", "Use built-in GLSL preprocessor instead of external (glslangValidator)")
         ("input", "Shader file or config.json path (positional)", cxxopts::value<std::string>())
         ("help", "Print usage");
@@ -32,6 +37,7 @@ int main(int argc, char* argv[]) {
             std::cout << "  Multi-pass:     ShadertoyEmulator config.json\n";
             std::cout << "  With options:   ShadertoyEmulator config.json --width 1920 --height 1080 --fps\n";
             std::cout << "  Built-in prep:  ShadertoyEmulator config.json --builtin-preprocessor\n";
+            std::cout << "  Export frames:  ShadertoyEmulator config.json --offscreen --frames 0:300:2 --output-dir frames/ --fps 30\n";
             return 0;
         }
 
@@ -44,10 +50,35 @@ int main(int argc, char* argv[]) {
         std::string inputPath = result["input"].as<std::string>();
         int width = result["width"].as<int>();
         int height = result["height"].as<int>();
-        bool showFps = result.count("fps") > 0;
+        bool showFps = result.count("show-fps") > 0;
+
+        int offlineFps = result["fps"].as<int>();
+        if (offlineFps <= 0) {
+            std::cerr << "--fps must be positive.\n";
+            return 1;
+        }
         bool useBuiltinPreprocessor = result.count("builtin-preprocessor") > 0;
         bool forceGui = result.count("gui") > 0;
         bool forceNoGui = result.count("no-gui") > 0;
+        bool offscreen = result.count("offscreen") > 0;
+
+        // 帧序列导出参数
+        bool captureEnabled = result.count("frames") > 0;
+        FrameRange captureRange;
+        if (captureEnabled) {
+            std::string framesText = result["frames"].as<std::string>();
+            if (!parseFrameRange(framesText, captureRange)) {
+                std::cerr << "Invalid --frames value: '" << framesText << "'\n"
+                          << "Expected Python slice syntax like 0:100:2 (stop is required and excluded).\n";
+                return 1;
+            }
+        }
+        std::filesystem::path captureDir = result["output-dir"].as<std::string>();
+
+        if (offscreen && !captureEnabled) {
+            std::cerr << "--offscreen requires --frames, otherwise there is no exit condition.\n";
+            return 1;
+        }
 
         // 设置预处理器模式
         GlslPreprocessor::Mode preprocessorMode = useBuiltinPreprocessor
@@ -83,7 +114,7 @@ int main(int argc, char* argv[]) {
         std::cout << "Window: " << config.getWidth() << "x" << config.getHeight() << "\n";
         std::cout << "Passes: " << config.getPasses().size() << "\n";
 
-        // GUI 设置：命令行参数优先于配置文件
+        // GUI 设置：命令行参数优先于配置文件，离屏模式一律关闭
         bool enableGui;
         if (forceGui) {
             enableGui = true;
@@ -92,7 +123,11 @@ int main(int argc, char* argv[]) {
         } else {
             enableGui = isJson && config.hasGui();
         }
-        ShadertoyEmulator emulator(config, showFps, enableGui);
+        if (offscreen) {
+            enableGui = false;
+        }
+        ShadertoyEmulator emulator(config, showFps, enableGui, offscreen, captureRange, captureDir,
+                                   static_cast<float>(offlineFps));
 
         std::cout << "Running... Press ESC to exit.\n";
         emulator.run();

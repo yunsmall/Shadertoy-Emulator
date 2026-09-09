@@ -3,8 +3,10 @@
 #include "shader_config.hpp"
 #include "gl_framebuffer.hpp"
 #include "sound_stream.hpp"
+#include "frame_range.hpp"
 #include <SFML/Graphics.hpp>
 #include <SFML/Window.hpp>
+#include <SFML/Window/Context.hpp>
 #include <SFML/Audio.hpp>
 #include <imgui.h>
 #include <imgui-SFML.h>
@@ -17,7 +19,9 @@
 
 class ShadertoyEmulator {
 public:
-    explicit ShadertoyEmulator(const ShaderConfig& config, bool showFps = false, bool enableGui = false);
+    explicit ShadertoyEmulator(const ShaderConfig& config, bool showFps = false, bool enableGui = false,
+                               bool offscreen = false, const FrameRange& captureRange = {},
+                               const std::filesystem::path& captureDir = {}, float offlineFps = 60.0f);
     void run();
 
 private:
@@ -35,6 +39,13 @@ private:
         int currentBuffer = 0;
         bool isImage = false;
         bool isSound = false;
+
+        // 编译后预查的 uniform location。-1 表示 shader 里没有这个 uniform
+        // （GLSL 编译器会把没用到的优化掉），这时不能调 setUniform，否则 SFML 每帧刷一行警告
+        GLint locIResolution = -1, locITime = -1, locITimeDelta = -1, locIFrame = -1;
+        GLint locIFrameRate = -1, locIMouse = -1, locIDate = -1;
+        GLint locChannelResolution = -1, locChannelTime = -1;
+        std::array<GLint, 4> locChannels = {-1, -1, -1, -1};
 
         GLFramebuffer* getWriteTarget() {
             return useDoubleBuffer ? (currentBuffer == 0 ? framebuffer.get() : framebufferAlt.get())
@@ -59,11 +70,14 @@ private:
 
     // 渲染
     void handleEvents();
-    void updateUniforms(sf::Shader& shader, int width, int height);
+    void beginFrame();  // 每帧开头算一次时间，保证所有 pass 看到同一份 iTime/iFrame
+    void cacheUniformLocations(RenderPass& pass);  // 编译后查一次 location，之后按需设置
+    void updateUniforms(RenderPass& pass, int width, int height);
     void resizeFramebuffers();
     void renderPasses();
     void renderPass(RenderPass& pass);
     void renderToScreen();
+    void presentToWindow();  // 把输出目标贴到窗口上，离屏模式不调用
 
     // 纹理管理
     GLTexture* getChannelTexture(const ChannelInput& input);
@@ -87,6 +101,10 @@ private:
     void renderImGui();
     void resetShader();
 
+    // 帧序列导出
+    void runOffscreen();
+    void captureFrame(int frameIndex);
+
     // 窗口相关
     sf::RenderWindow m_window;
     int m_width;
@@ -104,6 +122,21 @@ private:
     // 配置
     ShaderConfig m_config;
     std::string m_commonCode;
+
+    // 离屏渲染与帧序列导出
+    bool m_offscreen = false;
+    FrameRange m_captureRange;
+    std::filesystem::path m_captureDir;
+    float m_offlineFps = 60.0f;  // 离屏模式的虚拟帧率，否则没有 vsync 时 iTime 几乎不涨
+
+    // 每帧时间，beginFrame() 算好后所有 pass 共用，避免 buffer 和 image 差一帧
+    float m_frameTime = 0.0f;
+    float m_frameTimeDelta = 1.0f / 60.0f;
+    int m_frameIndex = 0;
+    std::array<float, 4> m_frameDate = {2024.0f, 1.0f, 1.0f, 0.0f};
+
+    std::unique_ptr<sf::Context> m_context;         // 离屏模式的 GL 上下文（无窗口）
+    std::unique_ptr<GLFramebuffer> m_outputTarget;  // 所有 pass 的最终输出目标
 
     // 渲染通道
     std::vector<std::unique_ptr<RenderPass>> m_passes;
