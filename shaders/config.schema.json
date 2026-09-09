@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/yunsmall/Shadertoy-Emulator/shaders/config.schema.json",
+  "title": "Shadertoy Emulator 配置",
+  "description": "多通道着色器配置。所有文件路径都相对于本配置文件所在目录。",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "本配置所遵循的 JSON Schema 路径，只给编辑器补全和校验用，程序会忽略它"
+    },
+    "name": {
+      "type": "string",
+      "description": "窗口标题，也是着色器名称"
+    },
+    "width": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 1280,
+      "description": "窗口宽度（像素）"
+    },
+    "height": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 720,
+      "description": "窗口高度（像素）"
+    },
+    "resizable": {
+      "type": "boolean",
+      "default": false,
+      "description": "窗口是否可调整大小"
+    },
+    "gui": {
+      "type": "boolean",
+      "default": false,
+      "description": "是否显示 ImGui 控制面板"
+    },
+    "common": {
+      "type": "string",
+      "description": "所有通道共享的 GLSL 代码文件，会自动注入到每个通道的 shader 前面"
+    },
+    "passes": {
+      "type": "array",
+      "minItems": 1,
+      "description": "渲染通道列表，按数组顺序执行",
+      "items": {
+        "$ref": "#/$defs/pass"
+      }
+    }
+  },
+  "required": ["passes"],
+  "additionalProperties": false,
+
+  "$defs": {
+    "pass": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "通道名。BufferA/BufferC/BufferD 渲染到离屏纹理，Image 渲染到屏幕，Sound 生成音频"
+        },
+        "shader": {
+          "type": "string",
+          "description": "该通道的 GLSL 文件路径"
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "渲染目标宽度，省略则用窗口宽度"
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "渲染目标高度，省略则用窗口高度"
+        },
+        "channels": {
+          "type": "object",
+          "description": "iChannel0-3 的输入配置",
+          "propertyNames": {
+            "enum": ["0", "1", "2", "3"]
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/channel"
+          }
+        }
+      },
+      "required": ["name", "shader"],
+      "additionalProperties": false
+    },
+
+    "channel": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "enum": ["texture", "buffer", "keyboard"],
+          "description": "texture: 图片文件；buffer: 另一个通道的输出；keyboard: 256x3 的键盘状态纹理"
+        },
+        "source": {
+          "type": "string",
+          "description": "纹理文件路径（texture）或通道名（buffer）。keyboard 类型不需要"
+        },
+        "filter": {
+          "enum": ["linear", "nearest", "mipmap"],
+          "default": "linear",
+          "description": "纹理过滤方式"
+        },
+        "wrap": {
+          "enum": ["clamp", "repeat", "mirror"],
+          "default": "clamp",
+          "description": "纹理环绕方式"
+        },
+        "flipY": {
+          "type": "boolean",
+          "default": false,
+          "description": "是否上下翻转纹理（仅 texture 类型）"
+        }
+      },
+      "required": ["type"],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": { "enum": ["texture", "buffer"] }
+            },
+            "required": ["type"]
+          },
+          "then": {
+            "required": ["source"]
+          }
+        }
+      ],
+      "additionalProperties": false
+    }
+  }
+}

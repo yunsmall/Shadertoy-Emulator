@@ -1,4 +1,5 @@
 {
+  "$schema": "../../shaders/config.schema.json",
   "name": "Frame Sync Self Test",
   "width": 256,
   "height": 256,

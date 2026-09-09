@@ -1,5 +1,18 @@
 # Shadertoy Emulator - JSON 配置文件文档
 
+## JSON Schema
+
+`config.schema.json` 是本配置的 JSON Schema，提供字段补全、类型校验和取值枚举。
+在配置文件开头加一行 `$schema` 指向它即可启用（路径相对于配置文件自身）：
+
+```json
+{
+  "$schema": "../config.schema.json",
+  "name": "My Shader",
+  "passes": [ ... ]
+}
+```
+
 ## 完整配置示例
 
 ```json
@@ -43,9 +56,12 @@
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
+| `$schema` | string | 否 | - | JSON Schema 路径，仅供编辑器补全校验，程序忽略 |
 | `name` | string | 否 | "Shadertoy Emulator" | 窗口标题和shader名称 |
-| `width` | int | 否 | 800 | 窗口宽度（像素） |
-| `height` | int | 否 | 600 | 窗口高度（像素） |
+| `width` | int | 否 | 1280 | 窗口宽度（像素） |
+| `height` | int | 否 | 720 | 窗口高度（像素） |
+| `resizable` | bool | 否 | `false` | 窗口是否可调整大小 |
+| `gui` | bool | 否 | `false` | 是否显示 ImGui 控制面板 |
 | `common` | string | 否 | - | 共享GLSL代码文件路径（相对于config.json） |
 | `passes` | array | **是** | - | 渲染通道列表，按顺序执行 |
 
@@ -53,7 +69,7 @@
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
-| `name` | string | **是** | - | 通道名称，必须是 `BufferA`/`BufferB`/`BufferC`/`BufferD` 或 `Image` |
+| `name` | string | **是** | - | 通道名称，必须是 `BufferA`/`BufferB`/`BufferC`/`BufferD`、`Image` 或 `Sound` |
 | `shader` | string | **是** | - | GLSL shader文件路径（相对于config.json） |
 | `width` | int | 否 | 窗口宽度 | 该通道渲染目标宽度 |
 | `height` | int | 否 | 窗口高度 | 该通道渲染目标高度 |
@@ -75,7 +91,7 @@
 |------|------|
 | `"texture"` | 从图片文件加载纹理（支持 PNG, JPG, BMP 等） |
 | `"buffer"` | 引用另一个Buffer通道的渲染输出 |
-| `"keyboard"` | 键盘输入纹理（256x2像素，无需source） |
+| `"keyboard"` | 键盘输入纹理（256x3像素，无需source） |
 
 ### keyboard 纹理格式
 
@@ -209,8 +225,8 @@ shaders/my_effect/
 ```json
 {
   "name": "Simple Shader",
-  "width": 800,
-  "height": 600,
+  "width": 1280,
+  "height": 720,
   "passes": [
     {
       "name": "Image",
@@ -384,10 +400,9 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 
 ## 注意事项
 
-1. **循环依赖**：避免 A→B→A 这样的循环引用，会导致未定义行为
+1. **循环依赖**：Buffer 引用自己、或两个 Buffer 互相引用（A↔B）都会自动启用双缓冲，读到的是上一帧的结果，无需额外配置
 2. **分辨率**：Buffer可设置独立分辨率，用于优化性能或实现特定效果
-3. **双缓冲**：自引用Buffer自动启用双缓冲，无需额外配置
-4. **路径分隔符**：支持 `/` 和 `\`，建议统一使用 `/`
+3. **路径分隔符**：支持 `/` 和 `\`，建议统一使用 `/`
 
 ## 命令行使用
 
@@ -399,10 +414,16 @@ ShadertoyEmulator config.json
 ShadertoyEmulator config.json --width 1920 --height 1080
 
 # 显示FPS
-ShadertoyEmulator config.json --fps
+ShadertoyEmulator config.json --show-fps
 
 # 使用内置预处理器（默认使用外部 glslangValidator）
 ShadertoyEmulator config.json --builtin-preprocessor
+
+# 离屏导出第 0、2、4…98 帧为 PNG（无窗口、无 GUI、无音频、无输入）
+ShadertoyEmulator config.json --offscreen --frames 0:100:2 --output-dir out/
+
+# 导出 Sound pass 的音频
+ShadertoyEmulator config.json --offscreen --frames 0:300:1 --dump-audio out/audio.wav
 ```
 
 ### 命令行参数
@@ -411,5 +432,13 @@ ShadertoyEmulator config.json --builtin-preprocessor
 |------|------|
 | `--width <n>` | 覆盖窗口宽度 |
 | `--height <n>` | 覆盖窗口高度 |
-| `--fps` | 在控制台显示帧率 |
+| `--show-fps` | 在控制台显示帧率 |
+| `--gui` / `--no-gui` | 强制开启/关闭 ImGui 面板（覆盖配置里的 `gui`） |
+| `--frames <start:stop:step>` | 要保存为 PNG 的帧范围，Python 切片语法，**不含 stop**，start 默认 0、step 默认 1、stop 必填 |
+| `--output-dir <dir>` | PNG 保存目录（默认当前目录，不存在则自动创建），文件名为补零 5 位的帧号，如 `00000.png` |
+| `--offscreen` | 离屏渲染：无窗口、无 ImGui、无音频、无键鼠输入（必须配合 `--frames`） |
+| `--fps <n>` | 离屏渲染的虚拟帧率（默认 60），决定 `iTime` 的步长 |
+| `--dump-audio <file>` | 把 Sound pass 的输出写成 WAV 文件（离屏模式也可用） |
 | `--builtin-preprocessor` | 使用内置GLSL预处理器（默认使用外部glslangValidator） |
+
+> 非离屏模式也可以带 `--frames` 截图，但保存的 PNG 里不含 ImGui 面板；离屏模式下 `iDate` 固定为 2024-01-01 起始，便于复现。

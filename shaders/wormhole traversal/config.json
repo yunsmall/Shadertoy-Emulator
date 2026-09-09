@@ -1,4 +1,5 @@
 {
+  "$schema": "../config.schema.json",
   "name": "Wormhole",
   "width": 1300,
   "height": 1000,

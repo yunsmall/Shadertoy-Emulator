@@ -1,4 +1,5 @@
 {
+  "$schema": "../config.schema.json",
   "name": "Relativistic Space Drive",
   "width": 1200,
   "height": 900,

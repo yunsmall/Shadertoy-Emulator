@@ -1,4 +1,5 @@
 {
+  "$schema": "../config.schema.json",
   "name": "Rubik 's cube",
   "common": "common.glsl",
   "passes": [

@@ -1,4 +1,5 @@
 {
+  "$schema": "../config.schema.json",
   "name": "Pacman Game",
   "width": 1280,
   "height": 720,

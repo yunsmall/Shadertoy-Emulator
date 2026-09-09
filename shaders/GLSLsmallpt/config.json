@@ -1,4 +1,5 @@
 {
+  "$schema": "../config.schema.json",
   "name": "Planet Shadertoy",
   "width": 800,
   "height": 600,

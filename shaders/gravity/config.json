@@ -1,4 +1,5 @@
 {
+  "$schema": "../config.schema.json",
   "name": "Gravity Simulation",
   "width": 800,
   "height": 600,
