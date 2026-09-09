@@ -38,13 +38,13 @@ cmake --build .
 ### 运行单个着色器
 
 ```bash
-shadertoy_test shader.glsl
+ShadertoyEmulator shader.glsl
 ```
 
 ### 运行 JSON 配置
 
 ```bash
-shadertoy_test config.json
+ShadertoyEmulator config.json
 ```
 
 ### 命令行参数

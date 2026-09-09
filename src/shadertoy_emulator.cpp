@@ -16,9 +16,9 @@ static const float QUAD_VERTICES[] = {
      1.0f,  1.0f
 };
 
-ShadertoyEmulator::ShadertoyEmulator(const ShaderConfig& config, bool showFps)
+ShadertoyEmulator::ShadertoyEmulator(const ShaderConfig& config, bool showFps, bool enableGui)
     : m_width(config.getWidth()), m_height(config.getHeight()), m_showFps(showFps),
-      m_config(config), m_frameCount(0) {
+      m_enableGui(enableGui), m_config(config), m_frameCount(0) {
 
     // 创建窗口
     uint32_t windowStyle = m_config.isResizable()
@@ -52,6 +52,11 @@ ShadertoyEmulator::ShadertoyEmulator(const ShaderConfig& config, bool showFps)
     // 初始化时间
     m_startTime = std::chrono::high_resolution_clock::now();
     m_lastFrameTime = m_startTime;
+
+    // 初始化 ImGui
+    if (m_enableGui) {
+        initImGui();
+    }
 }
 
 void ShadertoyEmulator::initQuad() {
@@ -208,6 +213,7 @@ std::string ShadertoyEmulator::wrapProcessedShader(const std::string& processedC
         shader << "uniform sampler2D iChannel" << i << ";\n";
     }
     shader << "uniform vec3 iChannelResolution[4];\n";
+    shader << "uniform float iChannelTime[4];\n";
 
     shader << "\n";
 
@@ -242,6 +248,7 @@ std::string ShadertoyEmulator::wrapShader(const std::string& userCode) {
         shader << "uniform sampler2D iChannel" << i << ";\n";
     }
     shader << "uniform vec3 iChannelResolution[4];\n";
+    shader << "uniform float iChannelTime[4];\n";
 
     shader << "\n";
 
@@ -263,22 +270,76 @@ std::string ShadertoyEmulator::wrapShader(const std::string& userCode) {
 
 void ShadertoyEmulator::run() {
     sf::Clock clock;
+    sf::Clock fpsClock;
+    sf::Clock imguiDeltaClock;
 
     while (m_window.isOpen()) {
+        // 计算当前 FPS
+        float deltaTime = fpsClock.restart().asSeconds();
+        m_currentFps = deltaTime > 0 ? 1.0f / deltaTime : 0.0f;
+
         handleEvents();
-        renderPasses();
+
+        // 暂停时只在有事件时渲染
+        bool shouldRender = !m_paused || m_stepFrame;
+        if (shouldRender) {
+            renderPasses();
+            m_stepFrame = false;
+        }
+
+        // 渲染到屏幕 (OpenGL)
         renderToScreen();
 
-        if (m_showFps) {
-            float fps = 1.0f / clock.restart().asSeconds();
-            std::cout << "\rFPS: " << std::fixed << std::setprecision(1) << fps << "   " << std::flush;
+        // ImGui 更新和渲染
+        if (m_enableGui) {
+            // 保存 OpenGL 状态
+            m_window.pushGLStates();
+
+            ImGui::SFML::Update(m_window, imguiDeltaClock.restart());
+            renderImGui();
+            ImGui::SFML::Render(m_window);
+
+            // 恢复 OpenGL 状态
+            m_window.popGLStates();
         }
+
+        // 统一调用 display()
+        m_window.display();
+
+        if (m_showFps) {
+            std::cout << "\rFPS: " << std::fixed << std::setprecision(1) << m_currentFps << "   " << std::flush;
+        }
+    }
+
+    if (m_enableGui) {
+        shutdownImGui();
     }
 }
 
 void ShadertoyEmulator::handleEvents() {
+    bool hadEvent = false;
+
     while (auto event = m_window.pollEvent()) {
         if (event.has_value()) {
+            // ImGui 事件处理（优先）
+            if (m_enableGui) {
+                ImGui::SFML::ProcessEvent(m_window, *event);
+
+                // 只让渡鼠标/键盘事件。Closed、Resized 这类窗口生命周期事件被吞会导致
+                // 鼠标停在面板上时点 X 关不掉窗口、ESC 也退不出去。
+                // 鼠标释放同样放行，否则拖拽中划过面板再松开会让 m_mouseDown 卡在按下状态。
+                const ImGuiIO& io = ImGui::GetIO();
+                bool imGuiWants = false;
+                if (event->is<sf::Event::KeyPressed>() || event->is<sf::Event::KeyReleased>()) {
+                    imGuiWants = io.WantCaptureKeyboard;
+                } else if (event->is<sf::Event::MouseMoved>() || event->is<sf::Event::MouseButtonPressed>()) {
+                    imGuiWants = io.WantCaptureMouse;
+                }
+                if (imGuiWants) {
+                    continue;
+                }
+            }
+
             if (event->is<sf::Event::Closed>()) {
                 m_window.close();
             }
@@ -287,9 +348,12 @@ void ShadertoyEmulator::handleEvents() {
                 if (m_mouseDown) {
                     m_mouseDownX = static_cast<float>(mouseMoved->position.x);
                     m_mouseDownY = static_cast<float>(m_height - mouseMoved->position.y);
+                    // 拖拽时才算有意义的事件
+                    hadEvent = true;
                 }
             }
             else if (const auto* mousePressed = event->getIf<sf::Event::MouseButtonPressed>()) {
+                hadEvent = true;
                 m_mouseDown = true;
                 m_mouseJustClicked = true;
                 float x = static_cast<float>(mousePressed->position.x);
@@ -300,9 +364,11 @@ void ShadertoyEmulator::handleEvents() {
                 m_mouseClickY = y;
             }
             else if (event->is<sf::Event::MouseButtonReleased>()) {
+                hadEvent = true;
                 m_mouseDown = false;
             }
             else if (const auto* resized = event->getIf<sf::Event::Resized>()) {
+                hadEvent = true;
                 m_width = static_cast<int>(resized->size.x);
                 m_height = static_cast<int>(resized->size.y);
                 m_window.setView(sf::View(sf::FloatRect({0.0f, 0.0f},
@@ -311,6 +377,7 @@ void ShadertoyEmulator::handleEvents() {
                 resizeFramebuffers();
             }
             else if (const auto* keyPressed = event->getIf<sf::Event::KeyPressed>()) {
+                hadEvent = true;
                 int keyCode = mapSfmlKeyToShadertoy(keyPressed->code);
                 if (keyCode < 0) {
                     keyCode = mapSfmlScancodeToShadertoy(keyPressed->scancode);
@@ -323,6 +390,7 @@ void ShadertoyEmulator::handleEvents() {
                 }
             }
             else if (const auto* keyReleased = event->getIf<sf::Event::KeyReleased>()) {
+                hadEvent = true;
                 int keyCode = mapSfmlKeyToShadertoy(keyReleased->code);
                 if (keyCode < 0) {
                     keyCode = mapSfmlScancodeToShadertoy(keyReleased->scancode);
@@ -333,13 +401,27 @@ void ShadertoyEmulator::handleEvents() {
             }
         }
     }
+
+    // 暂停时，有事件才步进一帧
+    if (m_paused && hadEvent) {
+        m_stepFrame = true;
+    }
 }
 
 void ShadertoyEmulator::updateUniforms(sf::Shader& shader, int width, int height) {
     auto now = std::chrono::high_resolution_clock::now();
 
-    float iTime = std::chrono::duration<float>(now - m_startTime).count();
-    float iTimeDelta = std::chrono::duration<float>(now - m_lastFrameTime).count();
+    // 处理暂停状态
+    float iTime;
+    float iTimeDelta;
+    if (m_paused) {
+        iTime = m_pausedTime;
+        iTimeDelta = m_pausedTimeDelta;  // 使用保存的值
+    } else {
+        iTime = std::chrono::duration<float>(now - m_startTime).count();
+        iTimeDelta = std::chrono::duration<float>(now - m_lastFrameTime).count();
+    }
+
     float iFrameRate = (iTimeDelta > 0) ? 1.0f / iTimeDelta : 60.0f;
 
     std::time_t t = std::time(nullptr);
@@ -366,6 +448,13 @@ void ShadertoyEmulator::updateUniforms(sf::Shader& shader, int width, int height
     shader.setUniform("iMouse", sf::Glsl::Vec4(m_mouseDownX, m_mouseDownY, z, w));
 
     shader.setUniform("iDate", sf::Glsl::Vec4(iDateYear, iDateMonth, iDateDay, iDateSec));
+
+    // iChannelTime[4]
+    std::array<float, 4> channelTimeValues;
+    for (int i = 0; i < 4; ++i) {
+        channelTimeValues[i] = iTime;
+    }
+    shader.setUniformArray("iChannelTime", channelTimeValues.data(), 4);
 }
 
 void ShadertoyEmulator::resizeFramebuffers() {
@@ -397,22 +486,15 @@ void ShadertoyEmulator::renderPasses() {
     // 更新键盘纹理
     updateKeyboardTexture();
 
-    // 1. 先渲染所有 Buffer pass（非 Image 非 Sound）
+    // 渲染所有 Buffer pass（非 Image 非 Sound）
     for (auto& pass : m_passes) {
         if (!pass->isImage && !pass->isSound) {
             renderPass(*pass);
         }
     }
 
-    // 2. 检查并生成声音（此时可以读取当前帧的 Buffer 数据）
+    // 检查并生成声音（此时可以读取当前帧的 Buffer 数据）
     checkAndGenerateSound();
-
-    // 3. 最后渲染 Image pass
-    for (auto& pass : m_passes) {
-        if (pass->isImage) {
-            renderPass(*pass);
-        }
-    }
 
     m_lastFrameTime = std::chrono::high_resolution_clock::now();
     m_frameCount++;
@@ -421,7 +503,7 @@ void ShadertoyEmulator::renderPasses() {
     m_mouseJustClicked = false;
 }
 
-const GLTexture* ShadertoyEmulator::getChannelTexture(const ChannelInput& input) {
+GLTexture* ShadertoyEmulator::getChannelTexture(const ChannelInput& input) {
     if (input.type == ChannelInput::Type::Keyboard) {
         return m_keyboardTexture.get();
     } else if (input.type == ChannelInput::Type::Buffer) {
@@ -501,6 +583,7 @@ bool ShadertoyEmulator::loadTextureFile(const ChannelInput& input) {
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
             glGenerateMipmap(GL_TEXTURE_2D);
+            texture->mipmapDirty = false;  // 文件纹理内容不会再变，生成一次就够
             break;
         case ChannelInput::Filter::Linear:
         default:
@@ -536,6 +619,44 @@ bool ShadertoyEmulator::loadTextureFile(const ChannelInput& input) {
     return true;
 }
 
+GLuint ShadertoyEmulator::getSampler(ChannelInput::Filter filter, ChannelInput::Wrap wrap) {
+    const size_t index = static_cast<size_t>(filter) * 3 + static_cast<size_t>(wrap);
+    if (m_samplerCache[index]) {
+        return m_samplerCache[index];
+    }
+
+    GLuint sampler = 0;
+    glGenSamplers(1, &sampler);
+
+    switch (filter) {
+        case ChannelInput::Filter::Nearest:
+            glSamplerParameteri(sampler, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glSamplerParameteri(sampler, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            break;
+        case ChannelInput::Filter::Mipmap:
+            glSamplerParameteri(sampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+            glSamplerParameteri(sampler, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            break;
+        case ChannelInput::Filter::Linear:
+        default:
+            glSamplerParameteri(sampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glSamplerParameteri(sampler, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            break;
+    }
+
+    GLenum wrapMode = GL_CLAMP_TO_EDGE;
+    if (wrap == ChannelInput::Wrap::Repeat) {
+        wrapMode = GL_REPEAT;
+    } else if (wrap == ChannelInput::Wrap::Mirror) {
+        wrapMode = GL_MIRRORED_REPEAT;
+    }
+    glSamplerParameteri(sampler, GL_TEXTURE_WRAP_S, wrapMode);
+    glSamplerParameteri(sampler, GL_TEXTURE_WRAP_T, wrapMode);
+
+    m_samplerCache[index] = sampler;
+    return sampler;
+}
+
 void ShadertoyEmulator::renderPass(RenderPass& pass) {
     if (pass.isImage) return;
 
@@ -558,25 +679,20 @@ void ShadertoyEmulator::renderPass(RenderPass& pass) {
 
     for (int i = 0; i < 4; ++i) {
         if (pass.channels[i]) {
-            const GLTexture* tex = getChannelTexture(*pass.channels[i]);
+            GLTexture* tex = getChannelTexture(*pass.channels[i]);
             if (tex) {
                 tex->bind(i);
 
-                // 设置 filter
-                GLenum filter = (pass.channels[i]->filter == ChannelInput::Filter::Nearest)
-                              ? GL_NEAREST : GL_LINEAR;
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
+                // 采样参数交给 sampler object，纹理自身状态一个字节都不动
+                glBindSampler(i, getSampler(pass.channels[i]->filter, pass.channels[i]->wrap));
 
-                // 设置 wrap
-                GLenum wrap = GL_CLAMP_TO_EDGE;
-                if (pass.channels[i]->wrap == ChannelInput::Wrap::Repeat) {
-                    wrap = GL_REPEAT;
-                } else if (pass.channels[i]->wrap == ChannelInput::Wrap::Mirror) {
-                    wrap = GL_MIRRORED_REPEAT;
+                // Buffer 内容每帧都变，mipmap 得重新生成；dirty 标记保证一帧内只生成一次
+                if (pass.channels[i]->filter == ChannelInput::Filter::Mipmap
+                    && pass.channels[i]->type == ChannelInput::Type::Buffer
+                    && tex->mipmapDirty) {
+                    glGenerateMipmap(GL_TEXTURE_2D);
+                    tex->mipmapDirty = false;
                 }
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap);
 
                 GLint loc = glGetUniformLocation(shaderId, ("iChannel" + std::to_string(i)).c_str());
                 glUniform1i(loc, i);
@@ -595,11 +711,19 @@ void ShadertoyEmulator::renderPass(RenderPass& pass) {
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(0);
 
+    // 解绑 sampler，避免残留影响后续绘制（尤其 ImGui）
+    for (int i = 0; i < 4; ++i) {
+        glBindSampler(i, 0);
+    }
+
     // 解绑
     GLFramebuffer::unbind();
 
     // 切换缓冲
     pass.swapBuffer();
+
+    // 刚写入的内容变了，下次被采样成 mipmap 时要重新生成
+    target->colorTex.mipmapDirty = true;
 }
 
 void ShadertoyEmulator::renderToScreen() {
@@ -620,25 +744,20 @@ void ShadertoyEmulator::renderToScreen() {
 
             for (int i = 0; i < 4; ++i) {
                 if (pass->channels[i]) {
-                    const GLTexture* tex = getChannelTexture(*pass->channels[i]);
+                    GLTexture* tex = getChannelTexture(*pass->channels[i]);
                     if (tex) {
                         tex->bind(i);
 
-                        // 设置 filter
-                        GLenum filter = (pass->channels[i]->filter == ChannelInput::Filter::Nearest)
-                                      ? GL_NEAREST : GL_LINEAR;
-                        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
-                        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
+                        // 采样参数交给 sampler object，纹理自身状态一个字节都不动
+                        glBindSampler(i, getSampler(pass->channels[i]->filter, pass->channels[i]->wrap));
 
-                        // 设置 wrap
-                        GLenum wrap = GL_CLAMP_TO_EDGE;
-                        if (pass->channels[i]->wrap == ChannelInput::Wrap::Repeat) {
-                            wrap = GL_REPEAT;
-                        } else if (pass->channels[i]->wrap == ChannelInput::Wrap::Mirror) {
-                            wrap = GL_MIRRORED_REPEAT;
+                        // Buffer 内容每帧都变，mipmap 得重新生成；dirty 标记保证一帧内只生成一次
+                        if (pass->channels[i]->filter == ChannelInput::Filter::Mipmap
+                            && pass->channels[i]->type == ChannelInput::Type::Buffer
+                            && tex->mipmapDirty) {
+                            glGenerateMipmap(GL_TEXTURE_2D);
+                            tex->mipmapDirty = false;
                         }
-                        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap);
-                        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap);
 
                         GLint loc = glGetUniformLocation(shaderId, ("iChannel" + std::to_string(i)).c_str());
                         glUniform1i(loc, i);
@@ -659,12 +778,17 @@ void ShadertoyEmulator::renderToScreen() {
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
             glBindVertexArray(0);
 
+            // 解绑 sampler，避免残留影响 ImGui 渲染
+            for (int i = 0; i < 4; ++i) {
+                glBindSampler(i, 0);
+            }
+
             break;
         }
     }
 
     sf::Shader::bind(nullptr);
-    m_window.display();
+    // display() 由 run() 统一调用，以支持 ImGui
 }
 
 void ShadertoyEmulator::initKeyboardTexture() {
@@ -853,6 +977,7 @@ std::string ShadertoyEmulator::wrapSoundShader(const std::string& userCode) {
         shader << "uniform sampler2D iChannel" << i << ";\n";
     }
     shader << "uniform vec3 iChannelResolution[4];\n";
+    shader << "uniform float iChannelTime[4];\n";
 
     shader << "\n";
 
@@ -974,19 +1099,31 @@ void ShadertoyEmulator::generateSoundBatch() {
     for (int ch = 0; ch < 4; ++ch) {
         std::string uniformName = "iChannel" + std::to_string(ch);
         if (m_soundPass->channels[ch]) {
-            const GLTexture* tex = getChannelTexture(*m_soundPass->channels[ch]);
+            GLTexture* tex = getChannelTexture(*m_soundPass->channels[ch]);
             if (tex) {
                 glActiveTexture(GL_TEXTURE0 + ch);
                 glBindTexture(GL_TEXTURE_2D, tex->id);
+                glBindSampler(ch, getSampler(m_soundPass->channels[ch]->filter, m_soundPass->channels[ch]->wrap));
                 m_soundPass->shader.setUniform(uniformName, sf::Shader::CurrentTexture);
             }
         }
     }
 
+    // iChannelTime[4]（与 updateUniforms 保持一致，否则 sound shader 读到 0）
+    std::array<float, 4> channelTimeValues;
+    for (int i = 0; i < 4; ++i) {
+        channelTimeValues[i] = iTime;
+    }
+    m_soundPass->shader.setUniformArray("iChannelTime", channelTimeValues.data(), 4);
+
     // 渲染
     glBindVertexArray(m_vao);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(0);
+
+    for (int i = 0; i < 4; ++i) {
+        glBindSampler(i, 0);
+    }
 
     GLFramebuffer::unbind();
 
@@ -1048,4 +1185,73 @@ void ShadertoyEmulator::generateSoundBatch() {
             }
         }
     }
+}
+
+void ShadertoyEmulator::initImGui() {
+    // 初始化失败就退回无 GUI 模式，否则后面每帧的 Update/Render 都会崩
+    if (!ImGui::SFML::Init(m_window)) {
+        std::cerr << "Failed to initialize ImGui" << std::endl;
+        m_enableGui = false;
+        return;
+    }
+    ImGui::StyleColorsDark();
+}
+
+void ShadertoyEmulator::shutdownImGui() {
+    ImGui::SFML::Shutdown();
+}
+
+void ShadertoyEmulator::renderImGui() {
+    ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(200, 100), ImGuiCond_FirstUseEver);
+
+    ImGui::Begin("Controls", nullptr, ImGuiWindowFlags_NoCollapse);
+
+    // 重置按钮
+    if (ImGui::Button("Reset", ImVec2(60, 0))) {
+        resetShader();
+    }
+
+    ImGui::SameLine();
+
+    // 暂停/继续按钮
+    if (m_paused) {
+        if (ImGui::Button("Resume", ImVec2(60, 0))) {
+            m_paused = false;
+            // 恢复时间：调整 startTime 使 iTime 从暂停处继续
+            auto now = std::chrono::high_resolution_clock::now();
+            m_startTime = now - std::chrono::duration_cast<std::chrono::high_resolution_clock::duration>(
+                std::chrono::duration<float>(m_pausedTime));
+        }
+    } else {
+        if (ImGui::Button("Pause", ImVec2(60, 0))) {
+            m_paused = true;
+            auto now = std::chrono::high_resolution_clock::now();
+            m_pausedTime = std::chrono::duration<float>(now - m_startTime).count();
+            m_pausedTimeDelta = std::chrono::duration<float>(now - m_lastFrameTime).count();
+        }
+    }
+
+    // 当前时间
+    float currentTime = m_paused ? m_pausedTime :
+        std::chrono::duration<float>(std::chrono::high_resolution_clock::now() - m_startTime).count();
+    ImGui::Text("Time: %.2f s", currentTime);
+
+    // FPS
+    ImGui::Text("FPS: %.1f", m_currentFps);
+
+    // 帧数
+    ImGui::Text("Frame: %d", m_frameCount);
+
+    ImGui::End();
+}
+
+void ShadertoyEmulator::resetShader() {
+    m_startTime = std::chrono::high_resolution_clock::now();
+    m_lastFrameTime = m_startTime;
+    m_frameCount = 0;
+    m_pausedTime = 0.0f;
+    // 重置后渲染一帧
+    m_stepFrame = true;
+    // 注意：不修改 m_paused 状态，保持暂停状态
 }

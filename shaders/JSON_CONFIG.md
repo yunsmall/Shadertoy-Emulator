@@ -393,16 +393,16 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 
 ```bash
 # 运行JSON配置
-shadertoy_test config.json
+ShadertoyEmulator config.json
 
 # 覆盖分辨率
-shadertoy_test config.json --width 1920 --height 1080
+ShadertoyEmulator config.json --width 1920 --height 1080
 
 # 显示FPS
-shadertoy_test config.json --fps
+ShadertoyEmulator config.json --fps
 
 # 使用内置预处理器（默认使用外部 glslangValidator）
-shadertoy_test config.json --builtin-preprocessor
+ShadertoyEmulator config.json --builtin-preprocessor
 ```
 
 ### 命令行参数

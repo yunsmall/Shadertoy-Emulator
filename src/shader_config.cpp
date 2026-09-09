@@ -70,6 +70,9 @@ bool ShaderConfig::load(const std::string& jsonPath) {
         if (config.contains("resizable")) {
             m_resizable = config["resizable"].get<bool>();
         }
+        if (config.contains("gui")) {
+            m_gui = config["gui"].get<bool>();
+        }
         if (config.contains("common")) {
             m_commonPath = config["common"].get<std::string>();
         }

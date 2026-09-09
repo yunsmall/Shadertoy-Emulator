@@ -9,13 +9,14 @@ public:
     GLuint id = 0;
     int width = 1;
     int height = 1;
+    bool mipmapDirty = true;  // 内容变了就得重新生成 mipmap，默认视为待生成
 
     GLTexture() = default;
     GLTexture(const GLTexture&) = delete;
     GLTexture& operator=(const GLTexture&) = delete;
 
     GLTexture(GLTexture&& other) noexcept
-        : id(other.id), width(other.width), height(other.height) {
+        : id(other.id), width(other.width), height(other.height), mipmapDirty(other.mipmapDirty) {
         other.id = 0;
     }
 
@@ -25,6 +26,7 @@ public:
             id = other.id;
             width = other.width;
             height = other.height;
+            mipmapDirty = other.mipmapDirty;
             other.id = 0;
         }
         return *this;

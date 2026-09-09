@@ -38,13 +38,13 @@ cmake --build .
 ### Run a single shader
 
 ```bash
-shadertoy_test shader.glsl
+ShadertoyEmulator shader.glsl
 ```
 
 ### Run with JSON configuration
 
 ```bash
-shadertoy_test config.json
+ShadertoyEmulator config.json
 ```
 
 ### Command Line Arguments

@@ -1,7 +1,5 @@
 {
   "name": "Voxel game Evolution",
-  "width": 800,
-  "height": 450,
   "common": "common.glsl",
   "passes": [
     {

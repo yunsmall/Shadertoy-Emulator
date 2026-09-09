@@ -1,7 +1,5 @@
 {
   "name": "Planet Shadertoy",
-  "width": 800,
-  "height": 600,
   "passes": [
     {
       "name": "Sound",

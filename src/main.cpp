@@ -7,12 +7,14 @@
 #include "glsl_preprocessor.hpp"
 
 int main(int argc, char* argv[]) {
-    cxxopts::Options options("shadertoy_test", "Shadertoy Emulator - SFML 3");
+    cxxopts::Options options("ShadertoyEmulator", "Shadertoy Emulator - SFML 3");
 
     options.add_options()
         ("w,width", "Window width (overrides config)", cxxopts::value<int>()->default_value(std::to_string(ShaderConfig::DEFAULT_WIDTH)))
         ("h,height", "Window height (overrides config)", cxxopts::value<int>()->default_value(std::to_string(ShaderConfig::DEFAULT_HEIGHT)))
         ("fps", "Show FPS in console")
+        ("gui", "Enable GUI (overrides config)")
+        ("no-gui", "Disable GUI (overrides config)")
         ("builtin-preprocessor", "Use built-in GLSL preprocessor instead of external (glslangValidator)")
         ("input", "Shader file or config.json path (positional)", cxxopts::value<std::string>())
         ("help", "Print usage");
@@ -26,10 +28,10 @@ int main(int argc, char* argv[]) {
         if (result.count("help")) {
             std::cout << options.help() << std::endl;
             std::cout << "\nExamples:\n";
-            std::cout << "  Single shader:  shadertoy_test shader.glsl\n";
-            std::cout << "  Multi-pass:     shadertoy_test config.json\n";
-            std::cout << "  With options:   shadertoy_test config.json --width 1920 --height 1080 --fps\n";
-            std::cout << "  Built-in prep:  shadertoy_test config.json --builtin-preprocessor\n";
+            std::cout << "  Single shader:  ShadertoyEmulator shader.glsl\n";
+            std::cout << "  Multi-pass:     ShadertoyEmulator config.json\n";
+            std::cout << "  With options:   ShadertoyEmulator config.json --width 1920 --height 1080 --fps\n";
+            std::cout << "  Built-in prep:  ShadertoyEmulator config.json --builtin-preprocessor\n";
             return 0;
         }
 
@@ -44,6 +46,8 @@ int main(int argc, char* argv[]) {
         int height = result["height"].as<int>();
         bool showFps = result.count("fps") > 0;
         bool useBuiltinPreprocessor = result.count("builtin-preprocessor") > 0;
+        bool forceGui = result.count("gui") > 0;
+        bool forceNoGui = result.count("no-gui") > 0;
 
         // 设置预处理器模式
         GlslPreprocessor::Mode preprocessorMode = useBuiltinPreprocessor
@@ -79,7 +83,16 @@ int main(int argc, char* argv[]) {
         std::cout << "Window: " << config.getWidth() << "x" << config.getHeight() << "\n";
         std::cout << "Passes: " << config.getPasses().size() << "\n";
 
-        ShadertoyEmulator emulator(config, showFps);
+        // GUI 设置：命令行参数优先于配置文件
+        bool enableGui;
+        if (forceGui) {
+            enableGui = true;
+        } else if (forceNoGui) {
+            enableGui = false;
+        } else {
+            enableGui = isJson && config.hasGui();
+        }
+        ShadertoyEmulator emulator(config, showFps, enableGui);
 
         std::cout << "Running... Press ESC to exit.\n";
         emulator.run();

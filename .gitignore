@@ -6,3 +6,5 @@ CLAUDE.md
 /.claude
 /shaders/mytest*
 /private
+/imgui.ini
+/sound_debug.wav

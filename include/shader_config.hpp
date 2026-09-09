@@ -22,6 +22,7 @@ public:
     const std::string& getCommonPath() const { return m_commonPath; }
     const std::vector<PassConfig>& getPasses() const { return m_passes; }
     const std::filesystem::path& getBasePath() const { return m_basePath; }
+    bool hasGui() const { return m_gui; }
 
     // 设置覆盖
     void setWidth(int width) { m_width = width; }
@@ -36,6 +37,7 @@ private:
     int m_width = DEFAULT_WIDTH;
     int m_height = DEFAULT_HEIGHT;
     bool m_resizable = false;  // 默认不可调整大小
+    bool m_gui = false;        // 默认不显示 GUI
     std::string m_commonPath;  // 相对路径
     std::vector<PassConfig> m_passes;
     std::filesystem::path m_basePath;  // JSON文件所在目录，用于解析相对路径

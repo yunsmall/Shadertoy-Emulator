@@ -6,6 +6,8 @@
 #include <SFML/Graphics.hpp>
 #include <SFML/Window.hpp>
 #include <SFML/Audio.hpp>
+#include <imgui.h>
+#include <imgui-SFML.h>
 #include <memory>
 #include <string>
 #include <array>
@@ -15,7 +17,7 @@
 
 class ShadertoyEmulator {
 public:
-    explicit ShadertoyEmulator(const ShaderConfig& config, bool showFps = false);
+    explicit ShadertoyEmulator(const ShaderConfig& config, bool showFps = false, bool enableGui = false);
     void run();
 
 private:
@@ -64,8 +66,9 @@ private:
     void renderToScreen();
 
     // 纹理管理
-    const GLTexture* getChannelTexture(const ChannelInput& input);
+    GLTexture* getChannelTexture(const ChannelInput& input);
     bool loadTextureFile(const ChannelInput& input);
+    GLuint getSampler(ChannelInput::Filter filter, ChannelInput::Wrap wrap);
 
     // 键盘输入
     void initKeyboardTexture();
@@ -78,11 +81,25 @@ private:
     void generateSoundBatch();  // 生成一批音频
     void checkAndGenerateSound();  // 检查并生成音频
 
+    // ImGui
+    void initImGui();
+    void shutdownImGui();
+    void renderImGui();
+    void resetShader();
+
     // 窗口相关
     sf::RenderWindow m_window;
     int m_width;
     int m_height;
     bool m_showFps;
+
+    // GUI 相关
+    bool m_enableGui = false;
+    bool m_paused = false;
+    bool m_stepFrame = false;
+    float m_pausedTime = 0.0f;
+    float m_pausedTimeDelta = 0.0f;  // 暂停时保存的 iTimeDelta
+    float m_currentFps = 0.0f;
 
     // 配置
     ShaderConfig m_config;
@@ -94,6 +111,11 @@ private:
 
     // 外部纹理缓存 (SFML 纹理用于文件加载，转换为 GLTexture)
     std::map<std::string, std::unique_ptr<GLTexture>> m_textureCache;
+
+    // 采样器缓存，下标 = filter * 3 + wrap（两者各只有 3 种取值，直接查表，比 map 更快）
+    // 采样参数挂在 sampler object 上，就不必每帧改纹理自身的状态，
+    // 同一纹理也才能被不同通道以各自的 filter/wrap 采样
+    std::array<GLuint, 9> m_samplerCache{};
 
     // 时间相关
     std::chrono::high_resolution_clock::time_point m_startTime;
