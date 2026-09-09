@@ -58,7 +58,7 @@ std::string GlslPreprocessor::processFile(const std::filesystem::path& filePath)
     if (m_mode == Mode::External) {
         return runExternalPreprocessor(buffer.str(), filePath.parent_path());
     }
-    return processCode(buffer.str(), filePath, 10);
+    return processCode(buffer.str(), filePath.parent_path(), 10);
 }
 
 std::string GlslPreprocessor::runExternalPreprocessor(const std::string& code,
@@ -66,14 +66,14 @@ std::string GlslPreprocessor::runExternalPreprocessor(const std::string& code,
     // 创建临时文件（放在 basePath 目录下，这样 #include 相对路径能正确工作）
     std::filesystem::path tempFile = basePath / ".glsl_preprocess_temp.frag";
 
-    // 写入代码
+    // 写入代码。glslangValidator 默认不认 #include，得显式请求 GL_GOOGLE_include_directive
     {
         std::ofstream out(tempFile, std::ios::binary);
         if (!out.is_open()) {
             std::cerr << "GLSL Preprocessor: cannot create temp file" << std::endl;
             return code;
         }
-        out << code;
+        out << "#extension GL_GOOGLE_include_directive : enable\n" << code;
     }
 
     // 构建 glslangValidator 命令
@@ -114,13 +114,23 @@ std::string GlslPreprocessor::runExternalPreprocessor(const std::string& code,
     // 删除临时文件
     std::filesystem::remove(tempFile);
 
-    return output;
+    // 把为了 include 才加的扩展声明剔掉，否则 GPU 驱动会对不认识的扩展报警告
+    std::string cleaned;
+    std::istringstream input(output);
+    std::string line;
+    while (std::getline(input, line)) {
+        if (line.find("GL_GOOGLE_include_directive") == std::string::npos) {
+            cleaned += line;
+            cleaned += '\n';
+        }
+    }
+    return cleaned;
 }
 
 // ========== 内置预处理器实现 ==========
 
 std::string GlslPreprocessor::processCode(const std::string& code,
-                                           const std::filesystem::path& currentPath,
+                                           const std::filesystem::path& currentDir,
                                            int depth) {
     if (depth < 0) {
         std::cerr << "GLSL Preprocessor: max include depth exceeded" << std::endl;
@@ -148,7 +158,7 @@ std::string GlslPreprocessor::processCode(const std::string& code,
 
             if (directive == "#include") {
                 if (isActive()) {
-                    std::string included = processInclude(args, currentPath, depth - 1);
+                    std::string included = processInclude(args, currentDir, depth - 1);
                     output << included;
                 }
             } else if (directive == "#define") {
@@ -197,7 +207,7 @@ std::string GlslPreprocessor::processCode(const std::string& code,
 }
 
 std::string GlslPreprocessor::processInclude(const std::string& args,
-                                              const std::filesystem::path& currentPath,
+                                              const std::filesystem::path& currentDir,
                                               int depth) {
     // 提取文件路径（支持 "path" 和 <path>）
     if (args.empty() || (args[0] != '"' && args[0] != '<')) {
@@ -215,7 +225,7 @@ std::string GlslPreprocessor::processInclude(const std::string& args,
     std::string includePath = args.substr(1, endPos - 1);
 
     // 解析完整路径
-    std::filesystem::path fullPath = currentPath.parent_path() / includePath;
+    std::filesystem::path fullPath = currentDir / includePath;
     fullPath = std::filesystem::weakly_canonical(fullPath);
 
     // 检查循环引用
@@ -236,7 +246,7 @@ std::string GlslPreprocessor::processInclude(const std::string& args,
     buffer << file.rdbuf();
 
     // 递归处理
-    return processCode(buffer.str(), fullPath, depth);
+    return processCode(buffer.str(), fullPath.parent_path(), depth);
 }
 
 void GlslPreprocessor::processDefine(const std::string& args) {

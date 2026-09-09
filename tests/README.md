@@ -22,6 +22,7 @@ python tests/run_tests.py --keep                    # 保留导出的 PNG 便于
 | `mipmap/` | 自引用 Buffer 配 `filter: mipmap` 时，高 mip 级能采到颜色而不是黑（黑说明 mipmap 链没生成） |
 | `crossref/` | 两个 Buffer 互相引用：BufferA = 2N+1，BufferB = 2N+2 |
 | `sound/` | Sound pass 输出 440Hz 正弦波，用 `--dump-audio` 导出后校验频率和幅度 |
+| `preprocessor/` | 宏、参数宏、条件编译、`#undef`、`#include`，内置与外部预处理器结果必须一致（外部需要 `glslangValidator`） |
 
 ## 加新用例
 

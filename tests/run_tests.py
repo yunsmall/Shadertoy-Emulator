@@ -142,6 +142,27 @@ def case_sound(exe, out):
     return True
 
 
+def case_preprocessor(exe, out):
+    """预处理器：宏 / 参数宏 / 条件编译 / #undef / #include，内置与外部结果必须一致"""
+    args = ["tests/preprocessor/config.json", "--offscreen", "--frames", "0:1:1"]
+    export(exe, args, out / "external")
+    export(exe, [*args, "--builtin-preprocessor"], out / "builtin")
+
+    ext = pixel(out / "external" / "00000.png", 0.5, 0.5)
+    bi = pixel(out / "builtin" / "00000.png", 0.5, 0.5)
+    expected = (64, 128, 159)
+
+    ok = True
+    if ext != bi:
+        ok = False
+        print(f"    外部={ext} 内置={bi}，两者应一致")
+    for label, got in (("外部", ext), ("内置", bi)):
+        if any(abs(a - b) > 1 for a, b in zip(got, expected)):
+            ok = False
+            print(f"    {label} {got}，期望 {expected}")
+    return ok
+
+
 CASES = [
     ("selftest", "单 pass uniform 编码与方向", case_selftest),
     ("multipass", "多 pass 帧同步", case_multipass),
@@ -149,6 +170,7 @@ CASES = [
     ("mipmap", "自引用 Buffer 的 mipmap", case_mipmap),
     ("crossref", "双 Buffer 互相引用", case_crossref),
     ("sound", "Sound pass 输出（440Hz 正弦波）", case_sound),
+    ("preprocessor", "预处理器（内置 vs 外部对照）", case_preprocessor),
 ]
 
 

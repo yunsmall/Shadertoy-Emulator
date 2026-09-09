@@ -51,14 +51,14 @@ private:
     std::set<std::filesystem::path> m_includedFiles;  // 防止循环引用
     std::vector<bool> m_conditionStack;  // 条件编译栈（true = 当前分支激活）
 
-    // 主处理
+    // 主处理。currentDir 始终是"当前文件所在目录"，#include 的相对路径基于它解析
     std::string processCode(const std::string& code,
-                            const std::filesystem::path& currentPath,
+                            const std::filesystem::path& currentDir,
                             int depth);
 
     // 指令处理
     std::string processInclude(const std::string& args,
-                               const std::filesystem::path& currentPath,
+                               const std::filesystem::path& currentDir,
                                int depth);
     void processDefine(const std::string& args);
     void processUndef(const std::string& args);
