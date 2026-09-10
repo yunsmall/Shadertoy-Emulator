@@ -336,9 +336,9 @@ Common代码会自动注入到所有通道的shader中。
 
 ## GLSL 预处理器
 
-默认使用外部预处理器 `glslangValidator -S frag -E`，需要安装并添加到PATH。
+默认使用外部预处理器 `glslangValidator -S frag -E`，需要安装并添加到PATH（安装方式见项目根目录的 README）。
 
-如果未安装 glslangValidator，可使用 `--builtin-preprocessor` 参数切换到内置预处理器。
+如果未安装，程序会自动改用内置预处理器，也可以用 `--builtin-preprocessor` 参数显式指定。
 
 内置预处理器支持以下指令：
 

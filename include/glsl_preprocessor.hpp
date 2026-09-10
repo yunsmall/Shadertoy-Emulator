@@ -39,6 +39,10 @@ private:
     Mode m_mode;
     static Mode s_defaultMode;
 
+    // m_mode 为 External 只代表用户的意图，PATH 里没有 glslangValidator 时还得退回内置
+    bool shouldUseExternal() const;
+    static bool externalValidatorAvailable();
+
     // ========== 内置预处理器 ==========
     // 宏定义
     struct Macro {

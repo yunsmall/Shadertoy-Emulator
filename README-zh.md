@@ -23,7 +23,7 @@
 - glad
 - cxxopts
 - nlohmann_json
-- glslangValidator（可选，用于外部预处理器）
+- glslangValidator（可选，默认的 GLSL 预处理器，见下方"GLSL 预处理器"）
 
 ## 构建
 
@@ -61,6 +61,36 @@ ShadertoyEmulator config.json
 | `--dump-audio <file.wav>` | 把 Sound pass 的输出写成 WAV（离屏模式下也能用） |
 | `--fps <n>` | 离屏渲染的虚拟帧率（默认 60） |
 | `--builtin-preprocessor` | 使用内置 GLSL 预处理器 |
+
+## GLSL 预处理器
+
+默认使用外部预处理器 `glslangValidator`（以 `-S frag -E` 调用），需要自行安装并加入 `PATH`。
+
+### 安装
+
+| 平台 | 方式 |
+|------|------|
+| Windows | 从 [glslang releases](https://github.com/KhronosGroup/glslang/releases) 下载压缩包，把其中的 `bin` 目录加进 `PATH`；或安装 Vulkan SDK（自带）。vcpkg 用户要装 `tools` feature：`vcpkg install glslang[tools]`（不带这个 feature 只有库，没有可执行文件），装完在 `installed/x64-windows/tools/glslang/` |
+| Linux | `apt install glslang-tools`（Debian/Ubuntu）、`pacman -S glslang`（Arch） |
+| macOS | `brew install glslang` |
+
+装完用 `glslangValidator --version` 确认。
+
+### 不装也能用
+
+程序启动时扫一遍 `PATH`，找不到 `glslangValidator` 会自动改用内置预处理器，并打印一行提示：
+
+```
+glslangValidator not found in PATH, falling back to built-in preprocessor
+```
+
+也可以显式指定：
+
+```bash
+ShadertoyEmulator config.json --builtin-preprocessor
+```
+
+内置预处理器支持 `#include`（相对当前文件解析，自动检测循环引用）、`#define`（含带参数的宏）、`#undef`、`#ifdef` / `#ifndef` / `#else` / `#endif`，对同一份代码的结果与外部预处理器一致（`tests/preprocessor/` 就是拿两者互相对照的）。
 
 ## 配置文件
 

@@ -10,6 +10,12 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#else
+#include <fcntl.h>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <unistd.h>
+extern char** environ;
 #endif
 
 // 静态成员初始化 - 默认使用外部预处理器
@@ -21,10 +27,77 @@ void GlslPreprocessor::reset() {
     m_conditionStack.clear();
 }
 
+namespace {
+// 只想知道 glslangValidator 能不能跑起来，不关心它输出什么，
+// 所以直接起个进程看退出码，不经过 shell，也不用管道。
+#ifdef _WIN32
+bool probeExternalValidator() {
+    // CreateProcessW 可能改动命令行缓冲，不能用字符串字面量
+    wchar_t cmdLine[] = L"glslangValidator --version";
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    // CREATE_NO_WINDOW 给它一个隐藏控制台，--version 的输出不会冒到这边的终端
+    if (CreateProcessW(nullptr, cmdLine, nullptr, nullptr, FALSE,
+                       CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi) == 0) {
+        return false;  // 找不到可执行文件
+    }
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD exitCode = 1;
+    GetExitCodeProcess(pi.hProcess, &exitCode);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    return exitCode == 0;
+}
+#else
+bool probeExternalValidator() {
+    // 子进程的输出丢到 /dev/null，只留退出码
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
+    posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
+
+    char* const argv[] = {const_cast<char*>("glslangValidator"),
+                          const_cast<char*>("--version"), nullptr};
+    pid_t pid = 0;
+    // 带 p 后缀的版本会按 PATH 查找，找不到直接返回错误码
+    const int rc = posix_spawnp(&pid, "glslangValidator", &actions, nullptr, argv, environ);
+    posix_spawn_file_actions_destroy(&actions);
+    if (rc != 0) {
+        return false;
+    }
+
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) {
+        return false;
+    }
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+#endif
+}  // namespace
+
+// 探测一次外部预处理器是否可用，结果缓存下来。
+// 用不了时退回内置预处理器：外部程序缺失会让预处理返回空串，
+// 而调用方只会看到 shader 编译失败，很难查到根因。
+bool GlslPreprocessor::externalValidatorAvailable() {
+    static const bool available = [] {
+        const bool found = probeExternalValidator();
+        if (!found) {
+            std::cerr << "glslangValidator not found in PATH, falling back to built-in preprocessor" << std::endl;
+        }
+        return found;
+    }();
+    return available;
+}
+
+bool GlslPreprocessor::shouldUseExternal() const {
+    return m_mode == Mode::External && externalValidatorAvailable();
+}
+
 std::string GlslPreprocessor::process(const std::string& code,
                                        const std::filesystem::path& basePath,
                                        int maxIncludeDepth) {
-    if (m_mode == Mode::External) {
+    if (shouldUseExternal()) {
         return runExternalPreprocessor(code, basePath);
     }
     reset();
@@ -34,7 +107,7 @@ std::string GlslPreprocessor::process(const std::string& code,
 std::string GlslPreprocessor::continueProcess(const std::string& code,
                                                const std::filesystem::path& basePath,
                                                int maxIncludeDepth) {
-    if (m_mode == Mode::External) {
+    if (shouldUseExternal()) {
         return runExternalPreprocessor(code, basePath);
     }
     // 不清空宏定义，保留之前定义的宏
@@ -55,7 +128,7 @@ std::string GlslPreprocessor::processFile(const std::filesystem::path& filePath)
     std::stringstream buffer;
     buffer << file.rdbuf();
 
-    if (m_mode == Mode::External) {
+    if (shouldUseExternal()) {
         return runExternalPreprocessor(buffer.str(), filePath.parent_path());
     }
     return processCode(buffer.str(), filePath.parent_path(), 10);

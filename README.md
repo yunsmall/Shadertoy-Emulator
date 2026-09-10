@@ -23,7 +23,7 @@ A Shadertoy shader emulator based on SFML 3, allowing you to run Shadertoy shade
 - glad
 - cxxopts
 - nlohmann_json
-- glslangValidator (optional, for external preprocessor)
+- glslangValidator (optional, the default GLSL preprocessor — see "GLSL Preprocessor" below)
 
 ## Building
 
@@ -61,6 +61,36 @@ ShadertoyEmulator config.json
 | `--dump-audio <file.wav>` | Write Sound pass output to a WAV file (works with `--offscreen` too) |
 | `--fps <n>` | Virtual frame rate for offscreen rendering (default: 60) |
 | `--builtin-preprocessor` | Use built-in GLSL preprocessor |
+
+## GLSL Preprocessor
+
+The default preprocessor is the external `glslangValidator` (invoked as `-S frag -E`). It must be installed and on your `PATH`.
+
+### Installation
+
+| Platform | How |
+|----------|-----|
+| Windows | Download a release from [glslang releases](https://github.com/KhronosGroup/glslang/releases) and add its `bin` directory to `PATH`; or install the Vulkan SDK, which bundles it. vcpkg users need the `tools` feature: `vcpkg install glslang[tools]` (without it you only get the library, no executable), which puts the binary in `installed/x64-windows/tools/glslang/` |
+| Linux | `apt install glslang-tools` (Debian/Ubuntu), `pacman -S glslang` (Arch) |
+| macOS | `brew install glslang` |
+
+Verify with `glslangValidator --version`.
+
+### Without It
+
+The program scans `PATH` at startup. If `glslangValidator` is missing it falls back to the built-in preprocessor automatically and prints:
+
+```
+glslangValidator not found in PATH, falling back to built-in preprocessor
+```
+
+You can also ask for it explicitly:
+
+```bash
+ShadertoyEmulator config.json --builtin-preprocessor
+```
+
+It supports `#include` (resolved relative to the current file, with cycle detection), `#define` (including function-like macros), `#undef`, and `#ifdef` / `#ifndef` / `#else` / `#endif`, and produces the same result as the external one for the same input (`tests/preprocessor/` cross-checks the two).
 
 ## Configuration
 
