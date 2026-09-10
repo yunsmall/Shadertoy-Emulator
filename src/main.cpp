@@ -18,7 +18,7 @@ int main(int argc, char* argv[]) {
         ("gui", "Enable GUI (overrides config)")
         ("no-gui", "Disable GUI (overrides config)")
         ("frames", "Frame range to save as PNG, Python slice syntax, e.g. 0:100:2 (stop required, excluded)", cxxopts::value<std::string>())
-        ("output-dir", "Directory for saved frames (default: current directory)", cxxopts::value<std::string>()->default_value("."))
+        ("output-dir", "Directory for saved frames (required with --frames)", cxxopts::value<std::string>()->default_value("."))
         ("offscreen", "Offscreen rendering: no window, no ImGui, no audio, no input (requires --frames)")
         ("dump-audio", "Write Sound pass output to a WAV file (works with --offscreen too)", cxxopts::value<std::string>())
         ("builtin-preprocessor", "Use built-in GLSL preprocessor instead of external (glslangValidator)")
@@ -74,7 +74,15 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
         }
-        std::filesystem::path captureDir = result["output-dir"].as<std::string>();
+        // 没有默认目录，省得一不小心往当前目录里倒一堆 PNG
+        std::filesystem::path captureDir;
+        if (captureEnabled) {
+            if (result.count("output-dir") == 0) {
+                std::cerr << "--frames requires --output-dir (there is no default directory).\n";
+                return 1;
+            }
+            captureDir = result["output-dir"].as<std::string>();
+        }
 
         std::filesystem::path audioDumpPath;
         if (result.count("dump-audio") > 0) {

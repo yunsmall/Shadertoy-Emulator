@@ -56,7 +56,7 @@ ShadertoyEmulator config.json
 | `--show-fps` | Display frame rate in console |
 | `--gui` / `--no-gui` | Force-enable / disable the ImGui panel (overrides config) |
 | `--frames <start:stop:step>` | Save matching frames as PNG (Python slice syntax; `stop` required and excluded) |
-| `--output-dir <dir>` | Directory for saved frames (default: current directory) |
+| `--output-dir <dir>` | Directory for saved frames; required with `--frames` (there is no default) |
 | `--offscreen` | Offscreen rendering: no window, no ImGui, no audio, no input (requires `--frames`) |
 | `--dump-audio <file.wav>` | Write Sound pass output to a WAV file (works with `--offscreen` too) |
 | `--fps <n>` | Virtual frame rate for offscreen rendering (default: 60) |

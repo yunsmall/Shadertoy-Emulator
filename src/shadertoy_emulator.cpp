@@ -250,6 +250,14 @@ std::string ShadertoyEmulator::wrapProcessedShader(const std::string& processedC
     std::ostringstream shader;
 
     shader << "#version 330 core\n\n";
+
+    // glslangValidator 展开 #include 后会写出 #line <n> "<file>"，
+    // 带文件名这种形式属于 ARB_shading_language_include 扩展，驱动默认不认。
+    // #extension 必须排在所有非预处理内容之前，所以只能紧跟在版本号后面
+    if (processedCode.find("#line") != std::string::npos) {
+        shader << "#extension GL_ARB_shading_language_include : enable\n\n";
+    }
+
     shader << "out vec4 fragColor;\n\n";
     shader << "uniform vec3 iResolution;\n";
     shader << "uniform float iTime;\n";
@@ -1185,9 +1193,25 @@ int ShadertoyEmulator::mapSfmlScancodeToShadertoy(sf::Keyboard::Scancode scancod
 std::string ShadertoyEmulator::wrapSoundShader(const std::string& userCode) {
     GlslPreprocessor preprocessor;
 
+    // 预处理得在拼 shader 之前做完：要先看结果里有没有带文件名的 #line，
+    // 才知道需不需要在最前面声明 ARB_shading_language_include
+    std::string commonCode;
+    if (!m_commonCode.empty()) {
+        commonCode = preprocessor.process(m_commonCode, m_config.getBasePath());
+    }
+    std::string passCode = preprocessor.continueProcess(userCode, m_config.getBasePath());
+
     std::ostringstream shader;
 
     shader << "#version 330 core\n\n";
+
+    // 同 wrapProcessedShader：glslangValidator 展开 #include 后写出的
+    // #line <n> "<file>" 要这个扩展才合法
+    if (commonCode.find("#line") != std::string::npos ||
+        passCode.find("#line") != std::string::npos) {
+        shader << "#extension GL_ARB_shading_language_include : enable\n\n";
+    }
+
     shader << "out vec2 fragColor;\n\n";
     shader << "uniform vec3 iResolution;\n";
     shader << "uniform float iTime;\n";
@@ -1207,13 +1231,13 @@ std::string ShadertoyEmulator::wrapSoundShader(const std::string& userCode) {
 
     shader << "\n";
 
-    if (!m_commonCode.empty()) {
+    if (!commonCode.empty()) {
         shader << "// === Common Code ===\n";
-        shader << preprocessor.process(m_commonCode, m_config.getBasePath()) << "\n";
+        shader << commonCode << "\n";
     }
 
     shader << "// === Sound Pass Code ===\n";
-    shader << preprocessor.continueProcess(userCode, m_config.getBasePath()) << "\n";
+    shader << passCode << "\n";
 
     shader << "void main() {\n";
     shader << "    int samp = iSampleOffset + int(floor(gl_FragCoord.x));\n";
@@ -1225,9 +1249,17 @@ std::string ShadertoyEmulator::wrapSoundShader(const std::string& userCode) {
 }
 
 void ShadertoyEmulator::initSoundPass(RenderPass& pass) {
+    // 一批样本渲染成 batchSamples x 1 的纹理，宽度不能超过 GL_MAX_TEXTURE_SIZE，
+    // 否则 FBO 建不出来（WSL 的 d3d12 后端上限只有 16384，撑不下 22050）
+    GLint maxTextureSize = 0;
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTextureSize);
+    if (maxTextureSize > 0 && maxTextureSize < m_soundBatchSamples) {
+        m_soundBatchSamples = maxTextureSize;
+    }
+
     // 创建 FBO 用于渲染音频样本
     pass.framebuffer = std::make_unique<GLFramebuffer>();
-    if (!pass.framebuffer->create(SOUND_BATCH_SAMPLES, 1)) {
+    if (!pass.framebuffer->create(m_soundBatchSamples, 1)) {
         std::cerr << "Failed to create FBO for Sound" << std::endl;
         return;
     }
@@ -1286,8 +1318,8 @@ void ShadertoyEmulator::initSoundPass(RenderPass& pass) {
 
     m_soundStream->play();
 
-    std::cout << "Initialized sound pass: " << SOUND_BATCH_SAMPLES << " samples per batch ("
-              << (SOUND_BATCH_SAMPLES * 1000.0 / SOUND_SAMPLE_RATE) << "ms @ " << SOUND_SAMPLE_RATE << "Hz)" << std::endl;
+    std::cout << "Initialized sound pass: " << m_soundBatchSamples << " samples per batch ("
+              << (m_soundBatchSamples * 1000.0 / SOUND_SAMPLE_RATE) << "ms @ " << SOUND_SAMPLE_RATE << "Hz)" << std::endl;
 }
 
 void ShadertoyEmulator::checkAndGenerateSound() {
@@ -1310,7 +1342,7 @@ void ShadertoyEmulator::checkAndGenerateSound() {
 void ShadertoyEmulator::generateSoundBatch() {
     if (!m_soundPass) return;
 
-    const int batchSamples = SOUND_BATCH_SAMPLES;
+    const int batchSamples = m_soundBatchSamples;
     std::vector<float> floatData(batchSamples * 2);
     std::vector<int16_t> audioSamples(batchSamples * 2);  // 立体声
 

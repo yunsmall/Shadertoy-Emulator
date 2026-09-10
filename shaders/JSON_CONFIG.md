@@ -435,7 +435,7 @@ ShadertoyEmulator config.json --offscreen --frames 0:300:1 --dump-audio out/audi
 | `--show-fps` | 在控制台显示帧率 |
 | `--gui` / `--no-gui` | 强制开启/关闭 ImGui 面板（覆盖配置里的 `gui`） |
 | `--frames <start:stop:step>` | 要保存为 PNG 的帧范围，Python 切片语法，**不含 stop**，start 默认 0、step 默认 1、stop 必填 |
-| `--output-dir <dir>` | PNG 保存目录（默认当前目录，不存在则自动创建），文件名为补零 5 位的帧号，如 `00000.png` |
+| `--output-dir <dir>` | PNG 保存目录，用 `--frames` 时必填（没有默认目录，不存在则自动创建），文件名为补零 5 位的帧号，如 `00000.png` |
 | `--offscreen` | 离屏渲染：无窗口、无 ImGui、无音频、无键鼠输入（必须配合 `--frames`） |
 | `--fps <n>` | 离屏渲染的虚拟帧率（默认 60），决定 `iTime` 的步长 |
 | `--dump-audio <file>` | 把 Sound pass 的输出写成 WAV 文件（离屏模式也可用） |

@@ -181,6 +181,7 @@ private:
     std::unique_ptr<SoundShaderStream> m_soundStream;
     RenderPass* m_soundPass = nullptr;  // Sound pass 指针
     int64_t m_soundSamplePosition = 0;  // 当前生成到的采样位置
+    int m_soundBatchSamples = SOUND_BATCH_SAMPLES;  // 实际批次宽度，受 GL_MAX_TEXTURE_SIZE 限制
 
     // 全屏四边形 VAO/VBO
     GLuint m_vao = 0;
