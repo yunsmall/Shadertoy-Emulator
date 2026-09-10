@@ -109,11 +109,14 @@ bool ShaderConfig::load(const std::string& jsonPath) {
                 // 解析输入通道
                 if (passJson.contains("channels")) {
                     for (auto& [key, value] : passJson["channels"].items()) {
-                        int channelIndex = std::stoi(key);
-                        if (channelIndex < 0 || channelIndex > 3) {
-                            std::cerr << "Invalid channel index: " << key << std::endl;
+                        // 键必须是 "0"-"3"。用 stoi 的话遇到别的键抛的异常看不出是哪个文件哪个通道
+                        if (key.size() != 1 || key[0] < '0' || key[0] > '3') {
+                            std::cerr << jsonPath << ": pass '" << pass.name
+                                      << "': channel key must be \"0\"-\"3\", got \"" << key << "\""
+                                      << std::endl;
                             continue;
                         }
+                        const int channelIndex = key[0] - '0';
 
                         if (value.contains("type") && value.contains("source")) {
                             std::string filterStr = value.contains("filter") ? value["filter"].get<std::string>() : "linear";

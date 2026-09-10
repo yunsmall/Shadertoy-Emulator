@@ -1,0 +1,26 @@
+{
+  "$schema": "../../shaders/config.schema.json",
+  "name": "Self-reference Read Self Test",
+  "width": 64,
+  "height": 64,
+  "passes": [
+    {
+      "name": "BufferA",
+      "shader": "a.glsl",
+      "channels": { "0": { "type": "buffer", "source": "BufferA" } }
+    },
+    {
+      "name": "BufferB",
+      "shader": "b.glsl",
+      "channels": { "0": { "type": "buffer", "source": "BufferA" } }
+    },
+    {
+      "name": "Image",
+      "shader": "show.glsl",
+      "channels": {
+        "0": { "type": "buffer", "source": "BufferA" },
+        "1": { "type": "buffer", "source": "BufferB" }
+      }
+    }
+  ]
+}

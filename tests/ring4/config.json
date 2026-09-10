@@ -1,0 +1,38 @@
+{
+  "$schema": "../../shaders/config.schema.json",
+  "name": "Four Node Ring Self Test",
+  "width": 64,
+  "height": 64,
+  "passes": [
+    {
+      "name": "BufferA",
+      "shader": "inc.glsl",
+      "channels": { "0": { "type": "buffer", "source": "BufferD" } }
+    },
+    {
+      "name": "BufferB",
+      "shader": "inc.glsl",
+      "channels": { "0": { "type": "buffer", "source": "BufferA" } }
+    },
+    {
+      "name": "BufferC",
+      "shader": "inc.glsl",
+      "channels": { "0": { "type": "buffer", "source": "BufferB" } }
+    },
+    {
+      "name": "BufferD",
+      "shader": "inc.glsl",
+      "channels": { "0": { "type": "buffer", "source": "BufferC" } }
+    },
+    {
+      "name": "Image",
+      "shader": "show.glsl",
+      "channels": {
+        "0": { "type": "buffer", "source": "BufferA" },
+        "1": { "type": "buffer", "source": "BufferB" },
+        "2": { "type": "buffer", "source": "BufferC" },
+        "3": { "type": "buffer", "source": "BufferD" }
+      }
+    }
+  ]
+}

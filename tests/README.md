@@ -21,6 +21,9 @@ python tests/run_tests.py --keep                    # 保留导出的 PNG 便于
 | `feedback/` | 自引用 Buffer（双缓冲）：帧 N 的累加值应为 N+1 |
 | `mipmap/` | 自引用 Buffer 配 `filter: mipmap` 时，高 mip 级能采到颜色而不是黑（黑说明 mipmap 链没生成） |
 | `crossref/` | 两个 Buffer 互相引用：BufferA = 2N+1，BufferB = 2N+2 |
+| `ring3/` | 三节点成环引用：A=3N+1、B=3N+2、C=3N+3（环里第一个渲染的读上一帧，其余读本帧） |
+| `ring4/` | 四节点成环引用：A=4N+1 … D=4N+4，环再长规律不变 |
+| `selfref_read/` | 自引用的 Buffer 被别的 pass 读取时给的是本帧的值（B = 10×(N+1)，不是 10×N） |
 | `sound/` | Sound pass 输出 440Hz 正弦波，用 `--dump-audio` 导出后校验频率和幅度 |
 | `preprocessor/` | 宏、参数宏、条件编译、`#undef`、`#include`，内置与外部预处理器结果必须一致（外部需要 `glslangValidator`） |
 | `video/`（用 `sound/` 的配置） | 视频导出的帧数、时长和音轨，用 `ffprobe` 核对，并确认音频时长跟着视频走而不是按每帧 0.5 秒累积 |

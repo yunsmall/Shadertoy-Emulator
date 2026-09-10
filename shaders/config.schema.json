@@ -57,7 +57,8 @@
       "properties": {
         "name": {
           "type": "string",
-          "description": "通道名。BufferA/BufferC/BufferD 渲染到离屏纹理，Image 渲染到屏幕，Sound 生成音频"
+          "enum": ["BufferA", "BufferB", "BufferC", "BufferD", "Image", "Sound"],
+          "description": "通道名，区分大小写。BufferA/BufferB/BufferC/BufferD 渲染到离屏纹理，Image 渲染到屏幕，Sound 生成音频"
         },
         "shader": {
           "type": "string",

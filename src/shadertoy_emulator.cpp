@@ -173,6 +173,20 @@ void ShadertoyEmulator::initPasses() {
         m_passMap[pass->name] = pass.get();
         m_passes.push_back(std::move(pass));
     }
+
+    // 没有 Image 通道就什么都不显示，导出也是一片黑。而名字拼错（比如写成小写 image）
+    // 会被当成 Buffer 悄悄收下，这里点一句，省得对着黑屏排查
+    bool hasImage = false;
+    for (const auto& pass : m_passes) {
+        if (pass->isImage) {
+            hasImage = true;
+            break;
+        }
+    }
+    if (!hasImage) {
+        std::cerr << "Warning: no pass named \"Image\" was initialized, so nothing will be rendered "
+                     "or exported (pass names are case-sensitive)" << std::endl;
+    }
 }
 
 bool ShadertoyEmulator::loadShader(RenderPass& pass, const PassConfig& config) {

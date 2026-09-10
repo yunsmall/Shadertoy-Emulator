@@ -116,6 +116,49 @@ def case_crossref(exe, out):
     return ok
 
 
+def case_ring3(exe, out):
+    """三节点成环引用：环里第一个渲染的读上一帧，其余读本帧"""
+    export(exe, ["tests/ring3/config.json", "--images", "0:4:1"], out)
+    ok = True
+    for n in range(4):
+        png = out / f"{n:05d}.png"
+        a = pixel(png, 1 / 6, 0.5)[0]
+        b = pixel(png, 0.5, 0.5)[0]
+        c = pixel(png, 5 / 6, 0.5)[0]
+        if (a, b, c) != (3 * n + 1, 3 * n + 2, 3 * n + 3):
+            ok = False
+            print(f"    帧 {n}: A={a} B={b} C={c}（期望 {3 * n + 1}/{3 * n + 2}/{3 * n + 3}）")
+    return ok
+
+
+def case_ring4(exe, out):
+    """四节点成环引用：环再长也按同样规律走"""
+    export(exe, ["tests/ring4/config.json", "--images", "0:4:1"], out)
+    ok = True
+    for n in range(4):
+        png = out / f"{n:05d}.png"
+        got = [pixel(png, i * 0.25 + 0.125, 0.5)[0] for i in range(4)]
+        exp = [4 * n + 1, 4 * n + 2, 4 * n + 3, 4 * n + 4]
+        if got != exp:
+            ok = False
+            print(f"    帧 {n}: {got}（期望 {exp}）")
+    return ok
+
+
+def case_selfref_read(exe, out):
+    """自引用的 Buffer 被别的 pass 读到的是本帧的值，不是上一帧"""
+    export(exe, ["tests/selfref_read/config.json", "--images", "0:4:1"], out)
+    ok = True
+    for n in range(4):
+        png = out / f"{n:05d}.png"
+        a = pixel(png, 0.25, 0.5)[0]
+        b = pixel(png, 0.75, 0.5)[0]
+        if a != n + 1 or b != 10 * (n + 1):
+            ok = False
+            print(f"    帧 {n}: A={a}(期望{n + 1}) B={b}(期望{10 * (n + 1)})")
+    return ok
+
+
 def case_sound(exe, out):
     """Sound pass：440Hz 正弦波的频率和幅度（用 --dump-audio 导出，离屏也能跑）"""
     wav = out / "audio.wav"
@@ -228,6 +271,9 @@ CASES = [
     ("feedback", "自引用 Buffer 累加", case_feedback),
     ("mipmap", "自引用 Buffer 的 mipmap", case_mipmap),
     ("crossref", "双 Buffer 互相引用", case_crossref),
+    ("ring3", "三节点成环引用", case_ring3),
+    ("ring4", "四节点成环引用", case_ring4),
+    ("selfref_read", "自引用 Buffer 被读取的时序", case_selfref_read),
     ("sound", "Sound pass 输出（440Hz 正弦波）", case_sound),
     ("preprocessor", "预处理器（内置 vs 外部对照）", case_preprocessor),
     ("video", "视频导出（帧数/时长/音轨同步）", case_video),
