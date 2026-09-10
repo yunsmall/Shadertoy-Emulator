@@ -95,6 +95,8 @@ private:
     void initSoundPass(RenderPass& pass);
     void generateSoundBatch();  // 按当前模式补足音频
     void renderSoundBatch(int batchSamples);  // 渲染一批采样并送去播放/编码/存档
+    void pausePlayback();                     // 暂停画面与声音
+    void resyncAudio(float targetTime);       // 让音频从画面时间 targetTime 处重新开始
     void checkAndGenerateSound();  // 检查并生成音频
 
     // ImGui
@@ -183,6 +185,9 @@ private:
     std::unique_ptr<SoundShaderStream> m_soundStream;
     RenderPass* m_soundPass = nullptr;  // Sound pass 指针
     int64_t m_soundSamplePosition = 0;  // 当前生成到的采样位置
+    bool m_audioResyncPending = false;  // 待重同步的音频（要碰 GL，不能在 ImGui 回调里做）
+    float m_audioResyncTarget = 0.0f;   // 重同步的目标画面时间（秒）
+    float m_pauseAnchor = 0.0f;         // 暂停那一刻的画面时间，用来判断中间有没有步进过
     int m_soundBatchSamples = SOUND_BATCH_SAMPLES;  // 实际批次宽度，受 GL_MAX_TEXTURE_SIZE 限制
 
     // 全屏四边形 VAO/VBO

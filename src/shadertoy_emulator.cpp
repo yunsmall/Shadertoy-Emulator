@@ -368,6 +368,13 @@ void ShadertoyEmulator::runWindow() {
 
         handleEvents();
 
+        // 音频重同步（恢复播放、重置）要重建缓冲，会绑定 FBO、改 viewport，
+        // 不能塞在 ImGui 的渲染回调里做，统一挪到这儿
+        if (m_audioResyncPending) {
+            m_audioResyncPending = false;
+            resyncAudio(m_audioResyncTarget);
+        }
+
         // 暂停时只在有事件时渲染
         bool shouldRender = !m_paused || m_stepFrame;
         if (shouldRender) {
@@ -1526,6 +1533,16 @@ void ShadertoyEmulator::initImGui() {
         return;
     }
     ImGui::StyleColorsDark();
+
+    // 默认样式的直角和紧凑间距看着很生硬，加点圆角、留白放宽些
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.WindowRounding = 6.0f;
+    style.FrameRounding = 4.0f;
+    style.GrabRounding = 4.0f;
+    style.WindowPadding = ImVec2(10.0f, 10.0f);
+    style.FramePadding = ImVec2(8.0f, 5.0f);
+    style.ItemSpacing = ImVec2(8.0f, 7.0f);
+    style.WindowTitleAlign = ImVec2(0.5f, 0.5f);
 }
 
 void ShadertoyEmulator::shutdownImGui() {
@@ -1534,49 +1551,103 @@ void ShadertoyEmulator::shutdownImGui() {
 
 void ShadertoyEmulator::renderImGui() {
     ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(200, 100), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(320, 190), ImGuiCond_FirstUseEver);
+    // 半透明，压在画面上时不至于糊住一大块
+    ImGui::SetNextWindowBgAlpha(0.85f);
 
     ImGui::Begin("Controls", nullptr, ImGuiWindowFlags_NoCollapse);
 
-    // 重置按钮
-    if (ImGui::Button("Reset", ImVec2(60, 0))) {
-        resetShader();
-    }
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float buttonWidth = (ImGui::GetContentRegionAvail().x - style.ItemSpacing.x * 2.0f) / 3.0f;
+    const ImVec2 buttonSize(buttonWidth, 26.0f);
 
-    ImGui::SameLine();
-
-    // 暂停/继续按钮
+    // 绿=继续走、琥珀=会停下、红=从头来，靠颜色区分比读字快
     if (m_paused) {
-        if (ImGui::Button("Resume", ImVec2(60, 0))) {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.45f, 0.26f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.26f, 0.58f, 0.33f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.15f, 0.36f, 0.21f, 1.0f));
+        const bool resumeClicked = ImGui::Button("Resume", buttonSize);
+        ImGui::PopStyleColor(3);
+
+        if (resumeClicked) {
             m_paused = false;
             // 恢复时间：调整 startTime 使 iTime 从暂停处继续
             auto now = std::chrono::high_resolution_clock::now();
             m_startTime = now - std::chrono::duration_cast<std::chrono::high_resolution_clock::duration>(
                 std::chrono::duration<float>(m_pausedTime));
-            // 画面从暂停处继续，声音也跟着继续
-            if (m_soundStream) m_soundStream->play();
+
+            if (m_pausedTime > m_pauseAnchor) {
+                // 单帧步进把暂停点往前推过，音频得按新位置重新生成才追得上画面。
+                // 音频是时间的确定函数，从同一时刻重生成的内容和原来一致。
+                // 重建要碰 FBO，不能在 ImGui 的回调里做，交给主循环
+                m_audioResyncTarget = m_pausedTime;
+                m_audioResyncPending = true;
+            } else if (m_soundStream) {
+                // 没步进过就直接接着播。走重建那条路要重启音频设备、重填队列，
+                // 中间会有一小段没声音
+                m_soundStream->play();
+            }
         }
     } else {
-        if (ImGui::Button("Pause", ImVec2(60, 0))) {
-            m_paused = true;
-            // 暂停画面时声音也得停，不然恢复之后音画就错开了
-            if (m_soundStream) m_soundStream->pause();
-            auto now = std::chrono::high_resolution_clock::now();
-            m_pausedTime = std::chrono::duration<float>(now - m_startTime).count();
-            m_pausedTimeDelta = std::chrono::duration<float>(now - m_lastFrameTime).count();
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.48f, 0.36f, 0.10f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.60f, 0.45f, 0.13f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.38f, 0.29f, 0.08f, 1.0f));
+        const bool pauseClicked = ImGui::Button("Pause", buttonSize);
+        ImGui::PopStyleColor(3);
+
+        if (pauseClicked) {
+            pausePlayback();
         }
     }
 
-    // 当前时间
-    float currentTime = m_paused ? m_pausedTime :
+    ImGui::SameLine();
+
+    // 单帧步进。位置一直占着、非暂停时变灰，免得按钮行随状态左右跳
+    if (ImGui::Button("Next Frame", buttonSize)) {
+        // 没暂停就先暂停，省得状态不对时点了半天没反应
+        pausePlayback();
+        // 暂停时 iTime 是冻在 m_pausedTime 上的，只重渲染拿到的还是同一帧。
+        // 把暂停点往前推一帧，画面才真的往前走
+        m_pausedTime += (m_pausedTimeDelta > 0.0f) ? m_pausedTimeDelta : (1.0f / 60.0f);
+        m_stepFrame = true;
+    }
+
+    ImGui::SameLine();
+
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.42f, 0.21f, 0.21f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.55f, 0.27f, 0.27f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.33f, 0.16f, 0.16f, 1.0f));
+    if (ImGui::Button("Reset", buttonSize)) {
+        resetShader();
+    }
+    ImGui::PopStyleColor(3);
+
+    ImGui::SeparatorText("Status");
+
+    // 标签列宽度按最长的那个算，几行数值才能对齐成一条
+    const float labelWidth = ImGui::CalcTextSize("Resolution").x + style.ItemSpacing.x * 2.0f;
+    const float currentTime = m_paused ? m_pausedTime :
         std::chrono::duration<float>(std::chrono::high_resolution_clock::now() - m_startTime).count();
-    ImGui::Text("Time: %.2f s", currentTime);
 
-    // FPS
-    ImGui::Text("FPS: %.1f", m_currentFps);
+    ImGui::TextDisabled("Time");
+    ImGui::SameLine(labelWidth);
+    ImGui::Text("%.2f s", currentTime);
 
-    // 帧数
-    ImGui::Text("Frame: %d", m_frameCount);
+    ImGui::TextDisabled("Frame");
+    ImGui::SameLine(labelWidth);
+    ImGui::Text("%d", m_frameCount);
+
+    ImGui::TextDisabled("FPS");
+    ImGui::SameLine(labelWidth);
+    // 掉到 30 以下标红，卡顿时一眼能看见
+    const bool slow = m_currentFps < 30.0f;
+    if (slow) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.92f, 0.45f, 0.42f, 1.0f));
+    ImGui::Text("%.1f", m_currentFps);
+    if (slow) ImGui::PopStyleColor();
+
+    ImGui::TextDisabled("Resolution");
+    ImGui::SameLine(labelWidth);
+    ImGui::Text("%d x %d", m_width, m_height);
 
     ImGui::End();
 }
@@ -1586,20 +1657,43 @@ void ShadertoyEmulator::resetShader() {
     m_lastFrameTime = m_startTime;
     m_frameCount = 0;
     m_pausedTime = 0.0f;
+    m_pauseAnchor = 0.0f;
     // 重置后渲染一帧
     m_stepFrame = true;
     // 注意：不修改 m_paused 状态，保持暂停状态
 
     // 音频也回到起点：丢掉旧缓冲、采样位置归零后重新预生成，
-    // 否则画面回到 0 秒而声音还停在原处，音画就错开了
+    // 否则画面回到 0 秒而声音还停在原处，音画就错开了。
+    // 重建要碰 FBO，不能在 ImGui 的回调里做，交给主循环
     if (m_soundStream) {
-        m_soundStream->stop();
-        m_soundStream->clearQueue();
-        m_soundSamplePosition = 0;
-        for (int i = 0; i < 6; ++i) {
-            generateSoundBatch();
-        }
-        // 暂停状态下不重新起播，等恢复时一起继续
-        if (!m_paused) m_soundStream->play();
+        m_audioResyncTarget = 0.0f;
+        m_audioResyncPending = true;
     }
+}
+
+void ShadertoyEmulator::pausePlayback() {
+    if (m_paused) return;
+
+    m_paused = true;
+    // 暂停画面时声音也得停，不然恢复之后音画就错开了
+    if (m_soundStream) m_soundStream->pause();
+
+    auto now = std::chrono::high_resolution_clock::now();
+    m_pausedTime = std::chrono::duration<float>(now - m_startTime).count();
+    m_pausedTimeDelta = std::chrono::duration<float>(now - m_lastFrameTime).count();
+    // 记下暂停点：恢复时靠它判断中间有没有单帧步进过
+    m_pauseAnchor = m_pausedTime;
+}
+
+void ShadertoyEmulator::resyncAudio(float targetTime) {
+    if (!m_soundStream) return;
+
+    m_soundStream->stop();  // 内部会重置播放位置并清掉 SFML 侧的缓冲
+    m_soundStream->clearQueue();
+    m_soundSamplePosition = static_cast<int64_t>(targetTime * SOUND_SAMPLE_RATE);
+    for (int i = 0; i < 6; ++i) {
+        generateSoundBatch();
+    }
+    // 暂停状态下不重新起播，等恢复时一起继续
+    if (!m_paused) m_soundStream->play();
 }
