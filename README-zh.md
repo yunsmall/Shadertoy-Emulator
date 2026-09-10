@@ -23,6 +23,7 @@
 - glad
 - cxxopts
 - nlohmann_json
+- FFmpeg 开发库（libavcodec、libavformat、libavutil、libswscale、libswresample）——视频导出用
 - glslangValidator（可选，默认的 GLSL 预处理器，见下方"GLSL 预处理器"）
 
 ## 构建
@@ -55,12 +56,16 @@ ShadertoyEmulator config.json
 | `--height <n>` | 覆盖窗口高度 |
 | `--show-fps` | 在控制台显示帧率 |
 | `--gui` / `--no-gui` | 强制开启 / 关闭 ImGui 面板（覆盖配置） |
-| `--frames <start:stop:step>` | 把匹配的帧保存为 PNG（Python 切片语法，`stop` 必填且不含） |
-| `--output-dir <dir>` | 保存目录，用 `--frames` 时必填（没有默认目录） |
-| `--offscreen` | 离屏渲染：无窗口、无 ImGui、无音频、无输入（需搭配 `--frames`） |
-| `--dump-audio <file.wav>` | 把 Sound pass 的输出写成 WAV（离屏模式下也能用） |
-| `--fps <n>` | 离屏渲染的虚拟帧率（默认 60） |
+| `--images <start:stop:step>` | **图片模式**：导出 PNG 序列，Python 切片语法，如 `0:300:2`（`stop` 必填且不含） |
+| `--output-dir <dir>` | PNG 保存目录，用 `--images` 时必填 |
+| `--video <file.mp4>` | **视频模式**：导出 H.264 + AAC 的 mp4，需搭配 `--duration` |
+| `--duration <秒>` | 视频时长，用 `--video` 时必填 |
+| `--fps <n>` | 导出帧率（默认 60）：图片模式决定 `iTime` 的步长，视频模式还决定输出帧率 |
+| `--dump-audio <file.wav>` | 额外把 Sound pass 的输出写成 WAV |
 | `--builtin-preprocessor` | 使用内置 GLSL 预处理器 |
+
+三种模式互斥：不给 `--images` 或 `--video` 就是窗口模式。导出模式没有窗口、没有 ImGui、
+没有键鼠输入，跑完自动退出。
 
 ## GLSL 预处理器
 
@@ -127,24 +132,39 @@ ShadertoyEmulator config.json --builtin-preprocessor
 
 详细配置说明请参阅 [shaders/JSON_CONFIG.md](shaders/JSON_CONFIG.md)。
 
-## 帧序列导出
+## 导出
 
-把指定范围的帧保存成 PNG 序列：
+### 图片序列
 
 ```bash
-# 离屏：无窗口、无 ImGui、无音频、无输入，跑完自动退出
-ShadertoyEmulator config.json --offscreen --frames 0:300:2 --output-dir frames/ --fps 30
-
-# 交互模式：一切照常，但保存的 PNG 里不含 ImGui 面板
-ShadertoyEmulator config.json --frames 0:300:2 --output-dir frames/
+ShadertoyEmulator config.json --images 0:300:2 --output-dir frames/ --fps 30
 ```
 
-- `--frames` 用 Python 切片语法：`0:300:2` 表示保存第 0、2、4、…、298 帧（`stop` 不含且必填）
+- `--images` 用 Python 切片语法：`0:300:2` 表示保存第 0、2、4、…、298 帧（`stop` 不含且必填）
 - 文件名为 `%05d.png`，用绝对帧号（`00000.png`、`00002.png`…）
-- 离屏模式用虚拟时间（`iTime = iFrame / --fps`），保证导出结果可复现
+- 导出时用虚拟时间（`iTime = iFrame / --fps`），保证结果可复现
 - 输出目录不存在会自动创建
-- 加 `--dump-audio out.wav` 可以顺便把 Sound pass 的输出写成 WAV。离屏模式下只有不带
-  `--dump-audio` 时才跳过 Sound pass；每渲染一帧生成 0.5 秒的音频
+
+### 视频
+
+```bash
+ShadertoyEmulator config.json --video out.mp4 --duration 5 --fps 60
+```
+
+- 从第 0 帧开始，导出 `--duration` 秒
+- 编码 H.264 视频 + AAC 音频封装成 mp4；shader 有 Sound pass 就自动带音轨
+- 宽高必须是偶数（H.264 用的 YUV420P 要求），奇数尺寸会直接报错而不是悄悄裁掉一列
+- 音频按视频时间轴生成，音画严格同步
+
+编码器来自 FFmpeg，且必须是带 libx264 编译的（FFmpeg 唯一的 H.264 编码器就是它）：
+
+| 平台 | 方式 |
+|------|------|
+| Windows | `vcpkg install ffmpeg[x264,x265,vpx,opus,mp3lame,dav1d]`，CMake 会自动找到 vcpkg 的 `FindFFMPEG` 模块 |
+| Debian/Ubuntu | `apt install libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev`，走 pkg-config |
+| macOS | `brew install ffmpeg` |
+
+两种导出模式都可以加 `--dump-audio out.wav`，额外把 Sound pass 的输出写成 WAV。
 
 ## Shadertoy 兼容性
 
@@ -187,9 +207,9 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 "0": { "type": "texture", "source": "photo.png", "flipY": true }
 ```
 
-**导出 PNG**：`--frames` 保存的 PNG 已经翻正，和 shader 里 `uv` 的方向一致（`uv.y` 大的位置在 PNG 上方），不用再自己翻转。
+**导出 PNG**：`--images` 保存的 PNG 已经翻正，和 shader 里 `uv` 的方向一致（`uv.y` 大的位置在 PNG 上方），不用再自己翻转。
 
-**离屏模式**：`--offscreen` 下没有输入，`iMouse` 恒为 `vec4(0)`，键盘纹理全 0。
+**导出模式**：没有输入，`iMouse` 恒为 `vec4(0)`，键盘纹理全 0。
 
 ### iMouse 格式
 

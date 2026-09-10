@@ -5,7 +5,7 @@
 #include "shader_config.hpp"
 #include "shadertoy_emulator.hpp"
 #include "glsl_preprocessor.hpp"
-#include "frame_range.hpp"
+#include "run_options.hpp"
 
 int main(int argc, char* argv[]) {
     cxxopts::Options options("ShadertoyEmulator", "Shadertoy Emulator - SFML 3");
@@ -14,13 +14,14 @@ int main(int argc, char* argv[]) {
         ("w,width", "Window width (overrides config)", cxxopts::value<int>()->default_value(std::to_string(ShaderConfig::DEFAULT_WIDTH)))
         ("h,height", "Window height (overrides config)", cxxopts::value<int>()->default_value(std::to_string(ShaderConfig::DEFAULT_HEIGHT)))
         ("show-fps", "Show FPS in console")
-        ("fps", "Virtual frame rate for offscreen rendering (default: 60)", cxxopts::value<int>()->default_value("60"))
+        ("fps", "Frame rate for exported images and video (default: 60)", cxxopts::value<int>()->default_value("60"))
         ("gui", "Enable GUI (overrides config)")
         ("no-gui", "Disable GUI (overrides config)")
-        ("frames", "Frame range to save as PNG, Python slice syntax, e.g. 0:100:2 (stop required, excluded)", cxxopts::value<std::string>())
-        ("output-dir", "Directory for saved frames (required with --frames)", cxxopts::value<std::string>()->default_value("."))
-        ("offscreen", "Offscreen rendering: no window, no ImGui, no audio, no input (requires --frames)")
-        ("dump-audio", "Write Sound pass output to a WAV file (works with --offscreen too)", cxxopts::value<std::string>())
+        ("images", "Export a PNG sequence: frame range in Python slice syntax, e.g. 0:100:2 (stop required, excluded). Requires --output-dir", cxxopts::value<std::string>())
+        ("output-dir", "Directory for the PNG sequence (required with --images)", cxxopts::value<std::string>())
+        ("video", "Export a video to this path. Requires --duration", cxxopts::value<std::string>())
+        ("duration", "Length of the exported video in seconds (required with --video)", cxxopts::value<int>())
+        ("dump-audio", "Also write the Sound pass output to a WAV file", cxxopts::value<std::string>())
         ("builtin-preprocessor", "Use built-in GLSL preprocessor instead of external (glslangValidator)")
         ("input", "Shader file or config.json path (positional)", cxxopts::value<std::string>())
         ("help", "Print usage");
@@ -36,9 +37,10 @@ int main(int argc, char* argv[]) {
             std::cout << "\nExamples:\n";
             std::cout << "  Single shader:  ShadertoyEmulator shader.glsl\n";
             std::cout << "  Multi-pass:     ShadertoyEmulator config.json\n";
-            std::cout << "  With options:   ShadertoyEmulator config.json --width 1920 --height 1080 --fps\n";
+            std::cout << "  With options:   ShadertoyEmulator config.json --width 1920 --height 1080 --show-fps\n";
+            std::cout << "  Export images:  ShadertoyEmulator config.json --images 0:300:2 --output-dir frames/ --fps 30\n";
+            std::cout << "  Export video:   ShadertoyEmulator config.json --video out.mp4 --duration 5 --fps 60\n";
             std::cout << "  Built-in prep:  ShadertoyEmulator config.json --builtin-preprocessor\n";
-            std::cout << "  Export frames:  ShadertoyEmulator config.json --offscreen --frames 0:300:2 --output-dir frames/ --fps 30\n";
             return 0;
         }
 
@@ -51,47 +53,68 @@ int main(int argc, char* argv[]) {
         std::string inputPath = result["input"].as<std::string>();
         int width = result["width"].as<int>();
         int height = result["height"].as<int>();
-        bool showFps = result.count("show-fps") > 0;
-
-        int offlineFps = result["fps"].as<int>();
-        if (offlineFps <= 0) {
-            std::cerr << "--fps must be positive.\n";
-            return 1;
-        }
         bool useBuiltinPreprocessor = result.count("builtin-preprocessor") > 0;
         bool forceGui = result.count("gui") > 0;
         bool forceNoGui = result.count("no-gui") > 0;
-        bool offscreen = result.count("offscreen") > 0;
 
-        // 帧序列导出参数
-        bool captureEnabled = result.count("frames") > 0;
-        FrameRange captureRange;
-        if (captureEnabled) {
-            std::string framesText = result["frames"].as<std::string>();
-            if (!parseFrameRange(framesText, captureRange)) {
-                std::cerr << "Invalid --frames value: '" << framesText << "'\n"
+        // 三种模式互斥：指定 --images 或 --video 就是导出模式，都没给就是窗口模式
+        if (result.count("images") && result.count("video")) {
+            std::cerr << "--images and --video are mutually exclusive.\n";
+            return 1;
+        }
+
+        RunOptions runOptions;
+        runOptions.showFps = result.count("show-fps") > 0;
+        runOptions.fps = static_cast<float>(result["fps"].as<int>());
+        if (runOptions.fps <= 0.0f) {
+            std::cerr << "--fps must be positive.\n";
+            return 1;
+        }
+        if (result.count("dump-audio") > 0) {
+            runOptions.audioDumpPath = result["dump-audio"].as<std::string>();
+        }
+
+        // 参数用错模式时报错而不是默默忽略，否则很容易以为生效了
+        if (result.count("images")) {
+            runOptions.mode = RunMode::Images;
+
+            std::string imagesText = result["images"].as<std::string>();
+            if (!parseFrameRange(imagesText, runOptions.imageRange)) {
+                std::cerr << "Invalid --images value: '" << imagesText << "'\n"
                           << "Expected Python slice syntax like 0:100:2 (stop is required and excluded).\n";
                 return 1;
             }
-        }
-        // 没有默认目录，省得一不小心往当前目录里倒一堆 PNG
-        std::filesystem::path captureDir;
-        if (captureEnabled) {
-            if (result.count("output-dir") == 0) {
-                std::cerr << "--frames requires --output-dir (there is no default directory).\n";
+            if (result.count("duration") > 0) {
+                std::cerr << "--duration only applies to --video mode.\n";
                 return 1;
             }
-            captureDir = result["output-dir"].as<std::string>();
-        }
+            if (result.count("output-dir") == 0) {
+                std::cerr << "--images requires --output-dir.\n";
+                return 1;
+            }
+            runOptions.imageDir = result["output-dir"].as<std::string>();
+        } else if (result.count("video")) {
+            runOptions.mode = RunMode::Video;
+            runOptions.videoPath = result["video"].as<std::string>();
 
-        std::filesystem::path audioDumpPath;
-        if (result.count("dump-audio") > 0) {
-            audioDumpPath = result["dump-audio"].as<std::string>();
-        }
-
-        if (offscreen && !captureEnabled) {
-            std::cerr << "--offscreen requires --frames, otherwise there is no exit condition.\n";
-            return 1;
+            if (result.count("output-dir") > 0) {
+                std::cerr << "--output-dir only applies to --images mode; --video already carries the path.\n";
+                return 1;
+            }
+            if (result.count("duration") == 0 || result["duration"].as<int>() <= 0) {
+                std::cerr << "--video requires a positive --duration (seconds).\n";
+                return 1;
+            }
+            runOptions.videoSeconds = result["duration"].as<int>();
+        } else {
+            if (result.count("output-dir") > 0) {
+                std::cerr << "--output-dir only applies to --images mode.\n";
+                return 1;
+            }
+            if (result.count("duration") > 0) {
+                std::cerr << "--duration only applies to --video mode.\n";
+                return 1;
+            }
         }
 
         // 设置预处理器模式
@@ -128,20 +151,19 @@ int main(int argc, char* argv[]) {
         std::cout << "Window: " << config.getWidth() << "x" << config.getHeight() << "\n";
         std::cout << "Passes: " << config.getPasses().size() << "\n";
 
-        // GUI 设置：命令行参数优先于配置文件，离屏模式一律关闭
-        bool enableGui;
+        // GUI 设置：命令行参数优先于配置文件，导出模式一律关闭
         if (forceGui) {
-            enableGui = true;
+            runOptions.enableGui = true;
         } else if (forceNoGui) {
-            enableGui = false;
+            runOptions.enableGui = false;
         } else {
-            enableGui = isJson && config.hasGui();
+            runOptions.enableGui = isJson && config.hasGui();
         }
-        if (offscreen) {
-            enableGui = false;
+        if (runOptions.isOffscreen()) {
+            runOptions.enableGui = false;
         }
-        ShadertoyEmulator emulator(config, showFps, enableGui, offscreen, captureRange, captureDir,
-                                   static_cast<float>(offlineFps), audioDumpPath);
+
+        ShadertoyEmulator emulator(config, runOptions);
 
         std::cout << "Running... Press ESC to exit.\n";
         emulator.run();

@@ -18,21 +18,16 @@ static const float QUAD_VERTICES[] = {
      1.0f,  1.0f
 };
 
-ShadertoyEmulator::ShadertoyEmulator(const ShaderConfig& config, bool showFps, bool enableGui,
-                                     bool offscreen, const FrameRange& captureRange,
-                                     const std::filesystem::path& captureDir, float offlineFps,
-                                     const std::filesystem::path& audioDumpPath)
-    : m_width(config.getWidth()), m_height(config.getHeight()), m_showFps(showFps),
-      m_enableGui(enableGui), m_config(config), m_offscreen(offscreen),
-      m_captureRange(captureRange), m_captureDir(captureDir), m_offlineFps(offlineFps),
-      m_audioDumpPath(audioDumpPath), m_frameCount(0) {
+ShadertoyEmulator::ShadertoyEmulator(const ShaderConfig& config, const RunOptions& options)
+    : m_options(options), m_width(config.getWidth()), m_height(config.getHeight()),
+      m_enableGui(options.enableGui), m_config(config), m_frameCount(0) {
 
     // 离屏模式没有窗口，ImGui 没有可依附的目标
-    if (m_offscreen) {
+    if (m_options.isOffscreen()) {
         m_enableGui = false;
     }
 
-    if (m_offscreen) {
+    if (m_options.isOffscreen()) {
         // sf::Context 构造即创建并激活一个不依附窗口的 OpenGL 上下文
         m_context = std::make_unique<sf::Context>();
     } else {
@@ -137,8 +132,8 @@ void ShadertoyEmulator::initPasses() {
 
         // Sound 通道特殊处理
         if (pass->isSound) {
-            if (m_offscreen && m_audioDumpPath.empty()) {
-                // 离屏导出不需要音频，整个 Sound pass 跳过
+            // 图片导出没地方放音频，除非用户另外要 WAV；视频模式的音轨就靠它
+            if (m_options.mode == RunMode::Images && m_options.audioDumpPath.empty()) {
                 continue;
             }
             m_soundPass = pass.get();  // 先保存指针，initSoundPass 里会用到
@@ -327,32 +322,24 @@ std::string ShadertoyEmulator::wrapShader(const std::string& userCode) {
 }
 
 void ShadertoyEmulator::run() {
-    // 导出目录两种模式都要用，统一在这里准备
-    if (m_captureRange.stop > 0) {
-        std::error_code ec;
-        std::filesystem::create_directories(m_captureDir, ec);
-        if (ec) {
-            std::cerr << "Cannot create output directory: " << m_captureDir
-                      << " (" << ec.message() << ")" << std::endl;
-            return;
-        }
+    switch (m_options.mode) {
+        case RunMode::Window:
+            runWindow();
+            break;
+        case RunMode::Images:
+            runImages();
+            break;
+        case RunMode::Video:
+            runVideo();
+            break;
     }
+}
 
-    if (m_offscreen) {
-        runOffscreen();
-        return;
-    }
-
-    sf::Clock clock;
+void ShadertoyEmulator::runWindow() {
     sf::Clock fpsClock;
     sf::Clock imguiDeltaClock;
 
     while (m_window.isOpen()) {
-        // 指定了帧范围时，跑完就退出
-        if (m_captureRange.stop > 0 && m_frameCount >= m_captureRange.stop) {
-            break;
-        }
-
         // 计算当前 FPS
         float deltaTime = fpsClock.restart().asSeconds();
         m_currentFps = deltaTime > 0 ? 1.0f / deltaTime : 0.0f;
@@ -368,11 +355,6 @@ void ShadertoyEmulator::run() {
 
         // 渲染到屏幕 (OpenGL)
         renderToScreen();
-
-        // 截图读的是输出目标，本来就不含 ImGui
-        if (shouldRender && m_captureRange.contains(m_frameIndex)) {
-            captureFrame(m_frameIndex);
-        }
 
         // iMouse.w 只表示"本帧刚点击"，所有 pass 都渲染完再清
         if (shouldRender) {
@@ -395,7 +377,7 @@ void ShadertoyEmulator::run() {
         // 统一调用 display()
         m_window.display();
 
-        if (m_showFps) {
+        if (m_options.showFps) {
             std::cout << "\rFPS: " << std::fixed << std::setprecision(1) << m_currentFps << "   " << std::flush;
         }
     }
@@ -407,18 +389,27 @@ void ShadertoyEmulator::run() {
     writeAudioDump();
 }
 
-void ShadertoyEmulator::runOffscreen() {
-    std::cout << "Offscreen export: frames [" << m_captureRange.start << ", "
-              << m_captureRange.stop << ") step " << m_captureRange.step
-              << " (" << m_captureRange.count() << " images) -> "
-              << std::filesystem::absolute(m_captureDir) << std::endl;
+void ShadertoyEmulator::runImages() {
+    const FrameRange& range = m_options.imageRange;
+
+    std::error_code ec;
+    std::filesystem::create_directories(m_options.imageDir, ec);
+    if (ec) {
+        std::cerr << "Cannot create output directory: " << m_options.imageDir
+                  << " (" << ec.message() << ")" << std::endl;
+        return;
+    }
+
+    std::cout << "Exporting images: frames [" << range.start << ", " << range.stop
+              << ") step " << range.step << " (" << range.count() << " images) -> "
+              << std::filesystem::absolute(m_options.imageDir) << std::endl;
 
     int saved = 0;
-    while (m_frameCount < m_captureRange.stop) {
+    while (m_frameCount < range.stop) {
         renderPasses();
         renderToScreen();
 
-        if (m_captureRange.contains(m_frameIndex)) {
+        if (range.contains(m_frameIndex)) {
             captureFrame(m_frameIndex);
             saved++;
         }
@@ -429,14 +420,63 @@ void ShadertoyEmulator::runOffscreen() {
     std::cout << "Exported " << saved << " frames." << std::endl;
 }
 
-void ShadertoyEmulator::captureFrame(int frameIndex) {
-    if (!m_outputTarget || m_outputTarget->fbo == 0 || m_width <= 0 || m_height <= 0) return;
+void ShadertoyEmulator::runVideo() {
+    const int fps = static_cast<int>(m_options.fps + 0.5f);
+    const int totalFrames = m_options.videoSeconds * fps;
 
-    std::vector<uint8_t> pixels(static_cast<size_t>(m_width) * static_cast<size_t>(m_height) * 4);
+    const std::filesystem::path parent = m_options.videoPath.parent_path();
+    if (!parent.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(parent, ec);
+        if (ec) {
+            std::cerr << "Cannot create output directory: " << parent << " (" << ec.message() << ")"
+                      << std::endl;
+            return;
+        }
+    }
+
+    // 有 Sound pass 才建音轨；没有就只写画面
+    m_videoWriter = std::make_unique<VideoWriter>();
+    if (!m_videoWriter->open(m_options.videoPath, m_width, m_height, fps, m_soundPass != nullptr)) {
+        std::cerr << "Failed to open video output: " << m_options.videoPath << std::endl;
+        m_videoWriter.reset();
+        return;
+    }
+
+    std::cout << "Exporting video: " << totalFrames << " frames (" << m_options.videoSeconds
+              << "s @ " << fps << "fps) -> "
+              << std::filesystem::absolute(m_options.videoPath) << std::endl;
+
+    std::vector<uint8_t> pixels;
+    while (m_frameCount < totalFrames) {
+        renderPasses();
+        renderToScreen();
+
+        readOutputPixels(pixels);
+        m_videoWriter->writeFrame(pixels.data());
+    }
+
+    m_videoWriter->close();
+    m_videoWriter.reset();
+
+    writeAudioDump();  // 只有用户另外要 WAV 时才会真写
+
+    std::cout << "Exported video." << std::endl;
+}
+
+void ShadertoyEmulator::readOutputPixels(std::vector<uint8_t>& pixels) {
+    pixels.resize(static_cast<size_t>(m_width) * static_cast<size_t>(m_height) * 4);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, m_outputTarget->fbo);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glReadPixels(0, 0, m_width, m_height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+void ShadertoyEmulator::captureFrame(int frameIndex) {
+    if (!m_outputTarget || m_outputTarget->fbo == 0 || m_width <= 0 || m_height <= 0) return;
+
+    std::vector<uint8_t> pixels;
+    readOutputPixels(pixels);
 
     // glReadPixels 是 bottom-up，sf::Image 期望 top-down
     sf::Image image(sf::Vector2u(static_cast<unsigned>(m_width), static_cast<unsigned>(m_height)),
@@ -446,23 +486,23 @@ void ShadertoyEmulator::captureFrame(int frameIndex) {
     std::ostringstream name;
     name << std::setfill('0') << std::setw(5) << frameIndex << ".png";
 
-    std::filesystem::path outPath = m_captureDir / name.str();
+    std::filesystem::path outPath = m_options.imageDir / name.str();
     if (!image.saveToFile(outPath)) {
         std::cerr << "Failed to save " << outPath << std::endl;
     }
 }
 
 void ShadertoyEmulator::writeAudioDump() {
-    if (m_audioDumpPath.empty()) return;
+    if (m_options.audioDumpPath.empty()) return;
 
     if (m_audioDumpSamples.empty()) {
         std::cerr << "No audio to dump (config has no Sound pass?)" << std::endl;
         return;
     }
 
-    std::ofstream out(m_audioDumpPath, std::ios::binary);
+    std::ofstream out(m_options.audioDumpPath, std::ios::binary);
     if (!out) {
-        std::cerr << "Cannot open audio dump file: " << m_audioDumpPath << std::endl;
+        std::cerr << "Cannot open audio dump file: " << m_options.audioDumpPath << std::endl;
         return;
     }
 
@@ -497,7 +537,7 @@ void ShadertoyEmulator::writeAudioDump() {
     write(m_audioDumpSamples.data(), static_cast<std::streamsize>(dataSize));
 
     const size_t frames = m_audioDumpSamples.size() / 2;
-    std::cout << "Wrote audio dump: " << m_audioDumpPath << " (" << frames << " frames, "
+    std::cout << "Wrote audio dump: " << m_options.audioDumpPath << " (" << frames << " frames, "
               << (static_cast<double>(frames) / SOUND_SAMPLE_RATE) << "s)" << std::endl;
 }
 
@@ -594,10 +634,10 @@ void ShadertoyEmulator::handleEvents() {
 }
 
 void ShadertoyEmulator::beginFrame() {
-    if (m_offscreen) {
+    if (m_options.isOffscreen()) {
         // 离屏没有 vsync 限帧，用虚拟时间，否则 iTime 几乎不涨、动画会静止
-        m_frameTime = static_cast<float>(m_frameCount) / m_offlineFps;
-        m_frameTimeDelta = 1.0f / m_offlineFps;
+        m_frameTime = static_cast<float>(m_frameCount) / m_options.fps;
+        m_frameTimeDelta = 1.0f / m_options.fps;
         // iDate 也用固定纪元 + 虚拟秒，否则同一命令每次导出的结果都不一样
         m_frameDate = {2024.0f, 1.0f, 1.0f, std::fmod(m_frameTime, 86400.0f)};
     } else if (m_paused) {
@@ -1003,7 +1043,7 @@ void ShadertoyEmulator::renderToScreen() {
     sf::Shader::bind(nullptr);
 
     // 离屏模式没有窗口可贴
-    if (!m_offscreen) {
+    if (!m_options.isOffscreen()) {
         presentToWindow();
     }
     // display() 由 run() 统一调用，以支持 ImGui
@@ -1302,7 +1342,11 @@ void ShadertoyEmulator::initSoundPass(RenderPass& pass) {
 
     cacheUniformLocations(pass);
 
-    if (m_offscreen) {
+    // 放在提前返回之前，导出模式也能看到 Sound pass 初始化成了什么样
+    std::cout << "Initialized sound pass: " << m_soundBatchSamples << " samples per batch ("
+              << (m_soundBatchSamples * 1000.0 / SOUND_SAMPLE_RATE) << "ms @ " << SOUND_SAMPLE_RATE << "Hz)" << std::endl;
+
+    if (m_options.isOffscreen()) {
         // 导出模式只要数据，不建音频流也就不播放
         return;
     }
@@ -1317,15 +1361,12 @@ void ShadertoyEmulator::initSoundPass(RenderPass& pass) {
     }
 
     m_soundStream->play();
-
-    std::cout << "Initialized sound pass: " << m_soundBatchSamples << " samples per batch ("
-              << (m_soundBatchSamples * 1000.0 / SOUND_SAMPLE_RATE) << "ms @ " << SOUND_SAMPLE_RATE << "Hz)" << std::endl;
 }
 
 void ShadertoyEmulator::checkAndGenerateSound() {
     if (!m_soundPass) return;
 
-    if (m_offscreen) {
+    if (m_options.isOffscreen()) {
         // 导出模式没有播放消耗，每帧固定生成一批
         generateSoundBatch();
         return;
@@ -1342,9 +1383,31 @@ void ShadertoyEmulator::checkAndGenerateSound() {
 void ShadertoyEmulator::generateSoundBatch() {
     if (!m_soundPass) return;
 
-    const int batchSamples = m_soundBatchSamples;
-    std::vector<float> floatData(batchSamples * 2);
-    std::vector<int16_t> audioSamples(batchSamples * 2);  // 立体声
+    if (m_options.isOffscreen() && m_options.fps > 0.0f) {
+        // 导出模式要把音频对齐到视频时间轴：第 N 帧结束时正好走到 N+1 帧对应的时间点。
+        // 用目标位置减当前位置，44100/fps 除不尽（24fps 是 1837.5）也不会越积越偏
+        const int64_t target = static_cast<int64_t>(
+            static_cast<double>(m_frameCount + 1) * SOUND_SAMPLE_RATE / m_options.fps);
+        // 帧率低时一帧要的样本可能超过 FBO 一次能渲染的量，拆成几批补完
+        int remaining = static_cast<int>(target - m_soundSamplePosition);
+        while (remaining > 0) {
+            const int batchSamples = std::min(remaining, m_soundBatchSamples);
+            renderSoundBatch(batchSamples);
+            remaining -= batchSamples;
+        }
+        return;
+    }
+
+    // 窗口模式：跟着播放进度补货
+    renderSoundBatch(m_soundBatchSamples);
+}
+
+void ShadertoyEmulator::renderSoundBatch(int batchSamples) {
+    if (batchSamples <= 0) return;
+
+    // glGetTexImage 读的是整张纹理，缓冲得按 FBO 宽度来，不能按实际渲染的窄条
+    std::vector<float> floatData(static_cast<size_t>(m_soundBatchSamples) * 2);
+    std::vector<int16_t> audioSamples(static_cast<size_t>(batchSamples) * 2);  // 立体声
 
     // 计算当前时间
     float iTime = static_cast<float>(m_soundSamplePosition) / SOUND_SAMPLE_RATE;
@@ -1424,53 +1487,14 @@ void ShadertoyEmulator::generateSoundBatch() {
     if (m_soundStream) {
         m_soundStream->pushSamples(audioSamples);
     }
-    if (!m_audioDumpPath.empty()) {
+    // 视频模式：这一帧的音频直接交给编码器，不用等跑完再拼
+    if (m_videoWriter) {
+        m_videoWriter->writeAudio(audioSamples.data(), batchSamples);
+    }
+    if (!m_options.audioDumpPath.empty()) {
         m_audioDumpSamples.insert(m_audioDumpSamples.end(), audioSamples.begin(), audioSamples.end());
     }
     m_soundSamplePosition += batchSamples;
-
-    // 调试：保存前几批到WAV文件
-    static int batchCount = 0;
-    static std::vector<int16_t> allSamples;
-    if (batchCount < 150) {
-        allSamples.insert(allSamples.end(), audioSamples.begin(), audioSamples.end());
-        batchCount++;
-        if (batchCount == 150) {
-            // 保存为WAV文件
-            FILE* f = fopen("sound_debug.wav", "wb");
-            if (f) {
-                // WAV header
-                int numSamples = allSamples.size() / 2;
-                int dataSize = allSamples.size() * sizeof(int16_t);
-                int fileSize = 36 + dataSize;
-
-                fwrite("RIFF", 1, 4, f);
-                fwrite(&fileSize, 4, 1, f);
-                fwrite("WAVE", 1, 4, f);
-                fwrite("fmt ", 1, 4, f);
-                int fmtSize = 16;
-                fwrite(&fmtSize, 4, 1, f);
-                short audioFormat = 1; // PCM
-                short channels = 2;
-                int sampleRate = SOUND_SAMPLE_RATE;
-                int byteRate = sampleRate * channels * 2;
-                short blockAlign = channels * 2;
-                short bitsPerSample = 16;
-                fwrite(&audioFormat, 2, 1, f);
-                fwrite(&channels, 2, 1, f);
-                fwrite(&sampleRate, 4, 1, f);
-                fwrite(&byteRate, 4, 1, f);
-                fwrite(&blockAlign, 2, 1, f);
-                fwrite(&bitsPerSample, 2, 1, f);
-                fwrite("data", 1, 4, f);
-                fwrite(&dataSize, 4, 1, f);
-                fwrite(allSamples.data(), sizeof(int16_t), allSamples.size(), f);
-                fclose(f);
-                std::cout << "Saved sound_debug.wav (" << numSamples << " samples, "
-                          << (float)numSamples / SOUND_SAMPLE_RATE << "s)" << std::endl;
-            }
-        }
-    }
 }
 
 void ShadertoyEmulator::initImGui() {

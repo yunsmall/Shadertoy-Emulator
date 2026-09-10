@@ -419,11 +419,14 @@ ShadertoyEmulator config.json --show-fps
 # 使用内置预处理器（默认使用外部 glslangValidator）
 ShadertoyEmulator config.json --builtin-preprocessor
 
-# 离屏导出第 0、2、4…98 帧为 PNG（无窗口、无 GUI、无音频、无输入）
-ShadertoyEmulator config.json --offscreen --frames 0:100:2 --output-dir out/
+# 导出第 0、2、4…98 帧为 PNG
+ShadertoyEmulator config.json --images 0:100:2 --output-dir out/
 
-# 导出 Sound pass 的音频
-ShadertoyEmulator config.json --offscreen --frames 0:300:1 --dump-audio out/audio.wav
+# 导出 5 秒视频（有 Sound pass 会自动带音轨）
+ShadertoyEmulator config.json --video out.mp4 --duration 5 --fps 60
+
+# 顺便把 Sound pass 的音频单独写成 WAV
+ShadertoyEmulator config.json --images 0:300:1 --output-dir out/ --dump-audio out/audio.wav
 ```
 
 ### 命令行参数
@@ -434,11 +437,13 @@ ShadertoyEmulator config.json --offscreen --frames 0:300:1 --dump-audio out/audi
 | `--height <n>` | 覆盖窗口高度 |
 | `--show-fps` | 在控制台显示帧率 |
 | `--gui` / `--no-gui` | 强制开启/关闭 ImGui 面板（覆盖配置里的 `gui`） |
-| `--frames <start:stop:step>` | 要保存为 PNG 的帧范围，Python 切片语法，**不含 stop**，start 默认 0、step 默认 1、stop 必填 |
-| `--output-dir <dir>` | PNG 保存目录，用 `--frames` 时必填（没有默认目录，不存在则自动创建），文件名为补零 5 位的帧号，如 `00000.png` |
-| `--offscreen` | 离屏渲染：无窗口、无 ImGui、无音频、无键鼠输入（必须配合 `--frames`） |
-| `--fps <n>` | 离屏渲染的虚拟帧率（默认 60），决定 `iTime` 的步长 |
-| `--dump-audio <file>` | 把 Sound pass 的输出写成 WAV 文件（离屏模式也可用） |
+| `--images <start:stop:step>` | **图片模式**：导出的帧范围，Python 切片语法，**不含 stop**，start 默认 0、step 默认 1、stop 必填 |
+| `--output-dir <dir>` | PNG 保存目录，用 `--images` 时必填（没有默认目录，不存在则自动创建），文件名为补零 5 位的帧号，如 `00000.png` |
+| `--video <file.mp4>` | **视频模式**：导出 H.264 + AAC 的 mp4，需搭配 `--duration` |
+| `--duration <秒>` | 视频时长，用 `--video` 时必填 |
+| `--fps <n>` | 导出帧率（默认 60）：图片模式决定 `iTime` 的步长，视频模式还决定输出帧率 |
+| `--dump-audio <file>` | 额外把 Sound pass 的输出写成 WAV 文件 |
 | `--builtin-preprocessor` | 使用内置GLSL预处理器（默认使用外部glslangValidator） |
 
-> 非离屏模式也可以带 `--frames` 截图，但保存的 PNG 里不含 ImGui 面板；离屏模式下 `iDate` 固定为 2024-01-01 起始，便于复现。
+> 三种模式互斥，不给 `--images` 或 `--video` 就是窗口模式。导出模式无窗口、无 ImGui、
+> 无键鼠输入，跑完自动退出；此时 `iDate` 固定从 2024-01-01 起算，便于复现。

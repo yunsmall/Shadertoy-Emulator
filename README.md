@@ -23,6 +23,7 @@ A Shadertoy shader emulator based on SFML 3, allowing you to run Shadertoy shade
 - glad
 - cxxopts
 - nlohmann_json
+- FFmpeg dev libraries (libavcodec, libavformat, libavutil, libswscale, libswresample) — for video export
 - glslangValidator (optional, the default GLSL preprocessor — see "GLSL Preprocessor" below)
 
 ## Building
@@ -55,12 +56,16 @@ ShadertoyEmulator config.json
 | `--height <n>` | Override window height |
 | `--show-fps` | Display frame rate in console |
 | `--gui` / `--no-gui` | Force-enable / disable the ImGui panel (overrides config) |
-| `--frames <start:stop:step>` | Save matching frames as PNG (Python slice syntax; `stop` required and excluded) |
-| `--output-dir <dir>` | Directory for saved frames; required with `--frames` (there is no default) |
-| `--offscreen` | Offscreen rendering: no window, no ImGui, no audio, no input (requires `--frames`) |
-| `--dump-audio <file.wav>` | Write Sound pass output to a WAV file (works with `--offscreen` too) |
-| `--fps <n>` | Virtual frame rate for offscreen rendering (default: 60) |
+| `--images <start:stop:step>` | **Image mode**: export a PNG sequence, Python slice syntax, e.g. `0:300:2` (`stop` required and excluded) |
+| `--output-dir <dir>` | Directory for the PNG sequence; required with `--images` |
+| `--video <file.mp4>` | **Video mode**: export an H.264 + AAC mp4; requires `--duration` |
+| `--duration <seconds>` | Length of the exported video; required with `--video` |
+| `--fps <n>` | Export frame rate (default: 60). Image mode uses it as the `iTime` step; video mode also uses it as the output frame rate |
+| `--dump-audio <file.wav>` | Also write the Sound pass output to a WAV file |
 | `--builtin-preprocessor` | Use built-in GLSL preprocessor |
+
+The three modes are mutually exclusive: without `--images` or `--video` you get window mode.
+Export modes have no window, no ImGui and no keyboard/mouse input, and exit when done.
 
 ## GLSL Preprocessor
 
@@ -127,24 +132,39 @@ Create a `config.json` to configure multi-pass shaders:
 
 For detailed configuration, see [shaders/JSON_CONFIG.md](shaders/JSON_CONFIG.md).
 
-## Frame Export
+## Export
 
-Save a frame range as a PNG sequence:
+### Image Sequence
 
 ```bash
-# Offscreen: no window, no ImGui, no audio, no input. Exits when the range is done.
-ShadertoyEmulator config.json --offscreen --frames 0:300:2 --output-dir frames/ --fps 30
-
-# Interactive: everything runs as usual, but the saved PNGs contain no ImGui overlay.
-ShadertoyEmulator config.json --frames 0:300:2 --output-dir frames/
+ShadertoyEmulator config.json --images 0:300:2 --output-dir frames/ --fps 30
 ```
 
-- `--frames` uses Python slice syntax: `0:300:2` saves frames 0, 2, 4, …, 298 (`stop` is excluded and required).
+- `--images` uses Python slice syntax: `0:300:2` saves frames 0, 2, 4, …, 298 (`stop` is excluded and required).
 - Files are named `%05d.png` with the absolute frame index (`00000.png`, `00002.png`, …).
-- Offscreen mode uses virtual time (`iTime = iFrame / --fps`) so exports are reproducible.
+- Export uses virtual time (`iTime = iFrame / --fps`) so results are reproducible.
 - The output directory is created if it does not exist.
-- Add `--dump-audio out.wav` to also write the Sound pass output. In offscreen mode the Sound pass
-  is only skipped when no `--dump-audio` is given; each rendered frame produces one 0.5 s audio batch.
+
+### Video
+
+```bash
+ShadertoyEmulator config.json --video out.mp4 --duration 5 --fps 60
+```
+
+- Starts at frame 0 and exports `--duration` seconds.
+- Encodes H.264 video plus AAC audio into an mp4; if the shader has a Sound pass the audio track is added automatically.
+- Width and height must be even (H.264 uses YUV420P); odd sizes are rejected instead of silently dropping a column.
+- Audio is generated along the video timeline, so picture and sound stay in sync.
+
+The encoder comes from FFmpeg, which must be built with libx264 (the only H.264 encoder FFmpeg has):
+
+| Platform | How |
+|----------|-----|
+| Windows | `vcpkg install ffmpeg[x264,x265,vpx,opus,mp3lame,dav1d]`; CMake picks up vcpkg's `FindFFMPEG` module automatically |
+| Debian/Ubuntu | `apt install libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev`; found through pkg-config |
+| macOS | `brew install ffmpeg` |
+
+Both export modes accept `--dump-audio out.wav` to additionally write the Sound pass output.
 
 ## Shadertoy Compatibility
 
@@ -187,9 +207,9 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 "0": { "type": "texture", "source": "photo.png", "flipY": true }
 ```
 
-**Exported PNGs**: frames saved by `--frames` are already flipped upright, matching the `uv` orientation in your shader (a larger `uv.y` is toward the top of the PNG), so no extra flip is needed.
+**Exported PNGs**: frames saved by `--images` are already flipped upright, matching the `uv` orientation in your shader (a larger `uv.y` is toward the top of the PNG), so no extra flip is needed.
 
-**Offscreen mode**: `--offscreen` has no input, so `iMouse` is always `vec4(0)` and the keyboard texture is all zeros.
+**Export modes**: there is no input, so `iMouse` is always `vec4(0)` and the keyboard texture is all zeros.
 
 ### iMouse Format
 

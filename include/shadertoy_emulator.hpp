@@ -3,7 +3,8 @@
 #include "shader_config.hpp"
 #include "gl_framebuffer.hpp"
 #include "sound_stream.hpp"
-#include "frame_range.hpp"
+#include "run_options.hpp"
+#include "video_writer.hpp"
 #include <SFML/Graphics.hpp>
 #include <SFML/Window.hpp>
 #include <SFML/Window/Context.hpp>
@@ -19,10 +20,7 @@
 
 class ShadertoyEmulator {
 public:
-    explicit ShadertoyEmulator(const ShaderConfig& config, bool showFps = false, bool enableGui = false,
-                               bool offscreen = false, const FrameRange& captureRange = {},
-                               const std::filesystem::path& captureDir = {}, float offlineFps = 60.0f,
-                               const std::filesystem::path& audioDumpPath = {});
+    ShadertoyEmulator(const ShaderConfig& config, const RunOptions& options);
     void run();
 
 private:
@@ -95,7 +93,8 @@ private:
 
     // 声音着色器
     void initSoundPass(RenderPass& pass);
-    void generateSoundBatch();  // 生成一批音频
+    void generateSoundBatch();  // 按当前模式补足音频
+    void renderSoundBatch(int batchSamples);  // 渲染一批采样并送去播放/编码/存档
     void checkAndGenerateSound();  // 检查并生成音频
 
     // ImGui
@@ -104,16 +103,23 @@ private:
     void renderImGui();
     void resetShader();
 
-    // 帧序列导出
-    void runOffscreen();
+    // 三种运行模式的入口
+    void runWindow();
+    void runImages();
+    void runVideo();
+
+    // 导出辅助
     void captureFrame(int frameIndex);
+    void readOutputPixels(std::vector<uint8_t>& pixels);  // 读输出目标，bottom-up RGBA8
     void writeAudioDump();
+
+    // 运行参数
+    RunOptions m_options;
 
     // 窗口相关
     sf::RenderWindow m_window;
     int m_width;
     int m_height;
-    bool m_showFps;
 
     // GUI 相关
     bool m_enableGui = false;
@@ -127,15 +133,11 @@ private:
     ShaderConfig m_config;
     std::string m_commonCode;
 
-    // 离屏渲染与帧序列导出
-    bool m_offscreen = false;
-    FrameRange m_captureRange;
-    std::filesystem::path m_captureDir;
-    float m_offlineFps = 60.0f;  // 离屏模式的虚拟帧率，否则没有 vsync 时 iTime 几乎不涨
-
-    // 音频导出：路径非空时把 Sound pass 的输出攒下来，跑完写成一个 WAV
-    std::filesystem::path m_audioDumpPath;
+    // 音频导出：m_options.audioDumpPath 非空时把 Sound pass 的输出攒下来，跑完写成 WAV
     std::vector<int16_t> m_audioDumpSamples;
+
+    // 视频模式：每帧渲染完把画面和这一帧对应的音频喂进去
+    std::unique_ptr<VideoWriter> m_videoWriter;
 
     // 每帧时间，beginFrame() 算好后所有 pass 共用，避免 buffer 和 image 差一帧
     float m_frameTime = 0.0f;

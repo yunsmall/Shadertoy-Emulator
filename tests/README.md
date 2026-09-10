@@ -10,7 +10,7 @@ python tests/run_tests.py --exe cmake-build-release/ShadertoyEmulator.exe
 python tests/run_tests.py --keep                    # 保留导出的 PNG 便于排查
 ```
 
-依赖 Pillow。导出结果默认写到临时目录，跑完即删。
+依赖 Pillow，视频用例另外需要 `ffprobe`。导出结果默认写到临时目录，跑完即删。
 
 ## 用例
 
@@ -23,6 +23,7 @@ python tests/run_tests.py --keep                    # 保留导出的 PNG 便于
 | `crossref/` | 两个 Buffer 互相引用：BufferA = 2N+1，BufferB = 2N+2 |
 | `sound/` | Sound pass 输出 440Hz 正弦波，用 `--dump-audio` 导出后校验频率和幅度 |
 | `preprocessor/` | 宏、参数宏、条件编译、`#undef`、`#include`，内置与外部预处理器结果必须一致（外部需要 `glslangValidator`） |
+| `video/`（用 `sound/` 的配置） | 视频导出的帧数、时长和音轨，用 `ffprobe` 核对，并确认音频时长跟着视频走而不是按每帧 0.5 秒累积 |
 
 ## 加新用例
 

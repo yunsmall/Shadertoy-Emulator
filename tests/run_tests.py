@@ -10,6 +10,7 @@
 依赖：Pillow
 """
 import argparse
+import json
 import shutil
 import struct
 import subprocess
@@ -31,8 +32,11 @@ def pixel(png, xr, yr):
     return im.getpixel((min(int(w * xr), w - 1), min(int(h * yr), h - 1)))
 
 
-def export(exe, args, outdir):
-    cmd = [str(exe), *args, "--output-dir", str(outdir)]
+def export(exe, args, outdir, with_output_dir=True):
+    """跑一次导出。视频模式自带输出路径，不接受 --output-dir"""
+    cmd = [str(exe), *args]
+    if with_output_dir:
+        cmd += ["--output-dir", str(outdir)]
     result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"{' '.join(cmd)}\n{result.stdout}\n{result.stderr}")
@@ -40,8 +44,8 @@ def export(exe, args, outdir):
 
 def case_selftest(exe, out):
     """单 pass：iFrame / iTime / iDate 编码 + 图像方向"""
-    export(exe, ["tests/selftest.glsl", "--offscreen", "--width", "256", "--height", "256",
-                 "--frames", "0:5:2"], out)
+    export(exe, ["tests/selftest.glsl", "--width", "256", "--height", "256",
+                 "--images", "0:5:2"], out)
     ok = True
     for n in (0, 2, 4):
         png = out / f"{n:05d}.png"
@@ -64,7 +68,7 @@ def case_selftest(exe, out):
 
 def case_multipass(exe, out):
     """BufferA 与 Image 的 iFrame 必须一致（差一帧是历史 bug）"""
-    export(exe, ["tests/multipass/config.json", "--offscreen", "--frames", "0:5:1"], out)
+    export(exe, ["tests/multipass/config.json", "--images", "0:5:1"], out)
     ok = True
     for n in range(5):
         png = out / f"{n:05d}.png"
@@ -78,7 +82,7 @@ def case_multipass(exe, out):
 
 def case_feedback(exe, out):
     """自引用 Buffer（双缓冲）：帧 N 的累加值应为 N+1"""
-    export(exe, ["tests/feedback/config.json", "--offscreen", "--frames", "0:6:1"], out)
+    export(exe, ["tests/feedback/config.json", "--images", "0:6:1"], out)
     ok = True
     for n in range(6):
         v = pixel(out / f"{n:05d}.png", 0.5, 0.5)[0]
@@ -90,7 +94,7 @@ def case_feedback(exe, out):
 
 def case_mipmap(exe, out):
     """自引用 Buffer 的 mipmap：第 5 级采样应返回 Buffer 颜色，而不是黑色（纹理不完整）"""
-    export(exe, ["tests/mipmap/config.json", "--offscreen", "--frames", "0:1:1"], out)
+    export(exe, ["tests/mipmap/config.json", "--images", "0:1:1"], out)
     r, g, b = pixel(out / "00000.png", 0.5, 0.5)
     ok = abs(r - 128) <= 1 and abs(g - 64) <= 1 and abs(b - 32) <= 1
     if not ok:
@@ -100,7 +104,7 @@ def case_mipmap(exe, out):
 
 def case_crossref(exe, out):
     """两个 Buffer 互相引用：BufferA = 2N+1，BufferB = 2N+2"""
-    export(exe, ["tests/crossref/config.json", "--offscreen", "--frames", "0:6:1"], out)
+    export(exe, ["tests/crossref/config.json", "--images", "0:6:1"], out)
     ok = True
     for n in range(6):
         png = out / f"{n:05d}.png"
@@ -115,7 +119,9 @@ def case_crossref(exe, out):
 def case_sound(exe, out):
     """Sound pass：440Hz 正弦波的频率和幅度（用 --dump-audio 导出，离屏也能跑）"""
     wav = out / "audio.wav"
-    export(exe, ["tests/sound/config.json", "--offscreen", "--frames", "0:4:1",
+    # 音频长度是 帧数/fps，60 帧正好 1 秒。窗口太短的话过零率只能数出整数个过零点，
+    # 量化误差能差出几十 Hz
+    export(exe, ["tests/sound/config.json", "--images", "0:60:1",
                  "--dump-audio", str(wav)], out)
 
     with wave.open(str(wav), "rb") as w:
@@ -144,7 +150,7 @@ def case_sound(exe, out):
 
 def case_preprocessor(exe, out):
     """预处理器：宏 / 参数宏 / 条件编译 / #undef / #include，内置与外部结果必须一致"""
-    args = ["tests/preprocessor/config.json", "--offscreen", "--frames", "0:1:1"]
+    args = ["tests/preprocessor/config.json", "--images", "0:1:1"]
     export(exe, args, out / "external")
     export(exe, [*args, "--builtin-preprocessor"], out / "builtin")
 
@@ -163,6 +169,59 @@ def case_preprocessor(exe, out):
     return ok
 
 
+def case_video(exe, out):
+    """视频导出：帧数、时长、音轨，以及音画是否同步（用 ffprobe 读回来核对）"""
+    fps, seconds = 30, 2
+    videopath = out / "clip.mp4"
+    export(exe, ["tests/sound/config.json", "--video", str(videopath),
+                 "--duration", str(seconds), "--fps", str(fps),
+                 "--width", "128", "--height", "128"],
+           out, with_output_dir=False)
+
+    if not videopath.exists() or videopath.stat().st_size == 0:
+        print(f"    没生成视频文件: {videopath}")
+        return False
+
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries",
+         "stream=codec_type,duration,nb_frames:format=duration", "-of", "json", str(videopath)],
+        capture_output=True, text=True)
+    if probe.returncode != 0:
+        print(f"    ffprobe 失败: {probe.stderr.strip()}")
+        return False
+
+    info = json.loads(probe.stdout)
+    streams = info.get("streams", [])
+    kinds = [s.get("codec_type") for s in streams]
+    if "video" not in kinds:
+        print(f"    没有视频流: {kinds}")
+        return False
+
+    video = next(s for s in streams if s.get("codec_type") == "video")
+    frames = int(video.get("nb_frames", 0))
+    if frames != seconds * fps:
+        print(f"    帧数 {frames}，期望 {seconds * fps}")
+        return False
+
+    # 时长优先取流自己的，取不到再退回容器的
+    vdur = float(video.get("duration") or info.get("format", {}).get("duration", 0))
+    if abs(vdur - seconds) > 0.2:
+        print(f"    视频时长 {vdur:.2f}s，期望 {seconds}s")
+        return False
+
+    if "audio" not in kinds:
+        print(f"    shader 有 Sound pass 但视频里没有音轨: {kinds}")
+        return False
+
+    # 音画同步：音频也该是 2 秒，而不是按"每帧 0.5 秒"累积出来的 60 秒
+    audio = next(s for s in streams if s.get("codec_type") == "audio")
+    adur = float(audio.get("duration") or info.get("format", {}).get("duration", 0))
+    if abs(adur - seconds) > 0.2:
+        print(f"    音频时长 {adur:.2f}s，期望 {seconds}s（音画不同步）")
+        return False
+    return True
+
+
 CASES = [
     ("selftest", "单 pass uniform 编码与方向", case_selftest),
     ("multipass", "多 pass 帧同步", case_multipass),
@@ -171,6 +230,7 @@ CASES = [
     ("crossref", "双 Buffer 互相引用", case_crossref),
     ("sound", "Sound pass 输出（440Hz 正弦波）", case_sound),
     ("preprocessor", "预处理器（内置 vs 外部对照）", case_preprocessor),
+    ("video", "视频导出（帧数/时长/音轨同步）", case_video),
 ]
 
 
