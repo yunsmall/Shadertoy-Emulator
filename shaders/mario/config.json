@@ -1,0 +1,14 @@
+{
+  "$schema": "../config.schema.json",
+  "name": "[SIG15] Mario World 1-1",
+  "passes": [
+    {
+      "name": "Image",
+      "shader": "image.glsl"
+    },
+    {
+      "name": "Sound",
+      "shader": "sound.glsl"
+    }
+  ]
+}
