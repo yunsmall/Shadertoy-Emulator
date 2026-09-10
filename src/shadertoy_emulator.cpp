@@ -350,6 +350,14 @@ void ShadertoyEmulator::run() {
 }
 
 void ShadertoyEmulator::runWindow() {
+    // 画面的 iTime 和音频的采样位置是两套独立的时间轴，起点必须对齐：
+    // 在 initPasses 里就 play() 的话，中间那堆初始化都变成音频超前画面的固定偏移
+    m_startTime = std::chrono::high_resolution_clock::now();
+    m_lastFrameTime = m_startTime;
+    if (m_soundStream) {
+        m_soundStream->play();
+    }
+
     sf::Clock fpsClock;
     sf::Clock imguiDeltaClock;
 
@@ -1373,8 +1381,7 @@ void ShadertoyEmulator::initSoundPass(RenderPass& pass) {
     for (int i = 0; i < 6; ++i) {
         generateSoundBatch();
     }
-
-    m_soundStream->play();
+    // 这里不 play()：音频的起步时刻要跟画面时间基准对齐，见 runWindow
 }
 
 void ShadertoyEmulator::checkAndGenerateSound() {
@@ -1546,10 +1553,14 @@ void ShadertoyEmulator::renderImGui() {
             auto now = std::chrono::high_resolution_clock::now();
             m_startTime = now - std::chrono::duration_cast<std::chrono::high_resolution_clock::duration>(
                 std::chrono::duration<float>(m_pausedTime));
+            // 画面从暂停处继续，声音也跟着继续
+            if (m_soundStream) m_soundStream->play();
         }
     } else {
         if (ImGui::Button("Pause", ImVec2(60, 0))) {
             m_paused = true;
+            // 暂停画面时声音也得停，不然恢复之后音画就错开了
+            if (m_soundStream) m_soundStream->pause();
             auto now = std::chrono::high_resolution_clock::now();
             m_pausedTime = std::chrono::duration<float>(now - m_startTime).count();
             m_pausedTimeDelta = std::chrono::duration<float>(now - m_lastFrameTime).count();
@@ -1578,4 +1589,17 @@ void ShadertoyEmulator::resetShader() {
     // 重置后渲染一帧
     m_stepFrame = true;
     // 注意：不修改 m_paused 状态，保持暂停状态
+
+    // 音频也回到起点：丢掉旧缓冲、采样位置归零后重新预生成，
+    // 否则画面回到 0 秒而声音还停在原处，音画就错开了
+    if (m_soundStream) {
+        m_soundStream->stop();
+        m_soundStream->clearQueue();
+        m_soundSamplePosition = 0;
+        for (int i = 0; i < 6; ++i) {
+            generateSoundBatch();
+        }
+        // 暂停状态下不重新起播，等恢复时一起继续
+        if (!m_paused) m_soundStream->play();
+    }
 }

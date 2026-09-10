@@ -17,6 +17,9 @@ public:
     // 添加音频数据到队列
     void pushSamples(const std::vector<int16_t>& samples);
 
+    // 清空待播数据（重置时用，否则会播出上一轮的残留）
+    void clearQueue();
+
     // 获取当前播放位置（采样数）
     int64_t getCurrentSample() const { return m_currentSample; }
 
