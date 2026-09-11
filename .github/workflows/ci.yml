@@ -124,6 +124,27 @@ jobs:
           7z x mesa.7z -omesa -y > $null
           Copy-Item mesa/x64/opengl32.dll, mesa/x64/libgallium_wgl.dll build/Release/
 
+      # runner 上导出会以 0x80070057 退出，本地怎么都复现不出来。
+      # 这里把几种组合各跑一遍，把完整输出留在日志里便于定位
+      - name: 冒烟测试（定位导出失败）
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $runs = @(
+            @{ name = '1 帧 64x64 内置预处理'; args = @('tests/selftest.glsl','--width','64','--height','64','--images','0:1:1','--builtin-preprocessor') },
+            @{ name = '1 帧 64x64 外部预处理'; args = @('tests/selftest.glsl','--width','64','--height','64','--images','0:1:1') },
+            @{ name = '1 帧 256x256';         args = @('tests/selftest.glsl','--width','256','--height','256','--images','0:1:1') }
+          )
+          $i = 0
+          foreach ($r in $runs) {
+            $i++
+            Write-Host "`n===== $($r.name) ====="
+            $a = $r.args
+            & ./build/Release/ShadertoyEmulator.exe @a --output-dir (Join-Path $env:TEMP "smoke$i")
+            $code = $LASTEXITCODE
+            Write-Host ("退出码: {0} (0x{1:X8})" -f $code, $code)
+          }
+
       - name: 跑测试
         shell: pwsh
         run: python tests/run_tests.py --exe build/Release/ShadertoyEmulator.exe
@@ -135,8 +156,10 @@ jobs:
           # 留着会跟着打进包里，把用户机器上的硬件加速也顶掉
           Remove-Item build/Release/opengl32.dll, build/Release/libgallium_wgl.dll -ErrorAction SilentlyContinue
 
-      # 每次构建都打一份：打包这步本身也得被验证，不然要等第一次发 tag 才发现它坏了
+      # 每次构建都打一份：打包这步本身也得被验证，不然要等第一次发 tag 才发现它坏了。
+      # always() 是为了测试挂了也能把产物传上去——那份二进制才复现得出问题
       - name: 打包
+        if: always()
         shell: pwsh
         run: |
           New-Item -ItemType Directory dist | Out-Null
@@ -161,13 +184,15 @@ jobs:
 
       # Actions 里也能下，但下载要登录 GitHub 账号；免登录的正式下载走下面的 Release
       - name: 上传构建产物
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ShadertoyEmulator-win64
           path: ShadertoyEmulator-*-win64.zip
 
+      # 必须 success()：不加的话光看 tag 就会发，测试没过的包也会挂到 Release 上
       - name: 发布
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') && success()
         uses: softprops/action-gh-release@v2
         with:
           files: ShadertoyEmulator-*-win64.zip
