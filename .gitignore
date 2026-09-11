@@ -9,3 +9,6 @@ CLAUDE.md
 /imgui.ini
 /sound_debug.wav
 /tmp
+/.cache
+/vcpkg
+/vcpkg_cache

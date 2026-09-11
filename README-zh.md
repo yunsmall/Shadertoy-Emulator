@@ -18,8 +18,10 @@
 ## 依赖
 
 - CMake 3.20+
-- C++26 编译器
+- 支持 C++23 的编译器：GCC 13+、Clang 17+ 或 MSVC 19.30+
+- Ninja
 - SFML 3
+- ImGui-SFML
 - glad
 - cxxopts
 - nlohmann_json
@@ -28,10 +30,68 @@
 
 ## 构建
 
+**大部分人不需要构建。** 每次发版都会在
+[Releases 页面](https://github.com/yunsmall/Shadertoy-Emulator/releases)附上编好的
+Windows 压缩包：下载、解压、运行 `ShadertoyEmulator.exe` 即可。
+
+### 从源码构建
+
+依赖由 [vcpkg](https://github.com/microsoft/vcpkg) 以经典模式管理——仓库里没有
+`vcpkg.json`，包装在 vcpkg 自身，所以要把 `VCPKG_ROOT` 指向你的 vcpkg 目录。
+
+1. 安装 vcpkg 并设置 `VCPKG_ROOT`：
+
+   ```bash
+   git clone https://github.com/microsoft/vcpkg
+   ./vcpkg/bootstrap-vcpkg.sh          # Windows 用 .\vcpkg\bootstrap-vcpkg.bat
+   ```
+
+2. 安装依赖。
+
+   **Windows** —— 完整的 FFmpeg feature 集合（H.264/H.265/VP9/Opus/MP3/AV1）。
+   只要视频导出能用的话，去掉多余的、留 `ffmpeg[x264]` 就行，首次构建能省下几十分钟。
+
+   ```bash
+   vcpkg install sfml imgui-sfml cxxopts nlohmann-json glad[loader] \
+                 "ffmpeg[x264,x265,vpx,opus,mp3lame,dav1d]" --triplet x64-windows
+   ```
+
+   **Linux** —— FFmpeg 用发行版的包，别让 vcpkg 再从头编一遍（那要几十分钟）：
+
+   ```bash
+   sudo apt install libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
+                    libx11-dev libxrandr-dev libxcursor-dev libxi-dev libxext-dev \
+                    libgl1-mesa-dev libudev-dev libasound2-dev
+   vcpkg install sfml imgui-sfml cxxopts nlohmann-json glad[loader] --triplet x64-linux
+   ```
+
+3. 配置与构建。`find_package` 能对上号全靠那个 toolchain 文件，不传的话配置阶段就会失败。
+
+   ```bash
+   cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+         -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+   cmake --build build --parallel 6
+   ```
+
+4. 运行。Windows 上要能找到 vcpkg 的运行时 DLL：把
+   `<VCPKG_ROOT>\installed\x64-windows\bin` 加进 `PATH`，或者把 DLL 拷到 exe 旁边。
+
+   ```bash
+   # Windows
+   build\ShadertoyEmulator.exe shader.glsl
+
+   # Linux
+   ./build/ShadertoyEmulator shader.glsl
+   ```
+
+### 测试
+
+需要 Python 3 和 Pillow；视频用例还需要 `ffprobe` 在 `PATH` 里。可执行文件默认按
+Windows 的路径找，所以 Linux 上要显式指定：
+
 ```bash
-mkdir build && cd build
-cmake ..
-cmake --build .
+python tests/run_tests.py                                  # Windows
+python tests/run_tests.py --exe build/ShadertoyEmulator    # Linux
 ```
 
 ## 使用

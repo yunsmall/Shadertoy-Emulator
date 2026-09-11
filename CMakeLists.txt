@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 project(ShadertoyEmulator)
 
-set(CMAKE_CXX_STANDARD 26)
+set(CMAKE_CXX_STANDARD 23)
 
 find_package(SFML COMPONENTS Network Graphics Window Audio System CONFIG REQUIRED)
 find_package(ImGui-SFML CONFIG REQUIRED)

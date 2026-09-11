@@ -18,8 +18,10 @@ A Shadertoy shader emulator based on SFML 3, allowing you to run Shadertoy shade
 ## Dependencies
 
 - CMake 3.20+
-- C++26 compiler
+- A C++23-capable compiler: GCC 13+, Clang 17+, or MSVC 19.30+
+- Ninja
 - SFML 3
+- ImGui-SFML
 - glad
 - cxxopts
 - nlohmann_json
@@ -28,10 +30,74 @@ A Shadertoy shader emulator based on SFML 3, allowing you to run Shadertoy shade
 
 ## Building
 
+**Most people don't need to build anything.** Every release ships a prebuilt
+Windows zip on the [Releases page](https://github.com/yunsmall/Shadertoy-Emulator/releases):
+download it, unpack it, run `ShadertoyEmulator.exe`.
+
+### From source
+
+Dependencies are managed by [vcpkg](https://github.com/microsoft/vcpkg) in
+classic mode — there is no `vcpkg.json`, packages are installed into vcpkg
+itself, so `VCPKG_ROOT` has to point at your vcpkg checkout.
+
+1. Install vcpkg and set `VCPKG_ROOT` to its directory:
+
+   ```bash
+   git clone https://github.com/microsoft/vcpkg
+   ./vcpkg/bootstrap-vcpkg.sh          # Windows: .\vcpkg\bootstrap-vcpkg.bat
+   ```
+
+2. Install the dependencies.
+
+   **Windows** — the full FFmpeg feature set (H.264/H.265/VP9/Opus/MP3/AV1).
+   Drop the extras and keep only `ffmpeg[x264]` if all you need is video export
+   working; that alone saves tens of minutes on the first build.
+
+   ```bash
+   vcpkg install sfml imgui-sfml cxxopts nlohmann-json glad[loader] \
+                 "ffmpeg[x264,x265,vpx,opus,mp3lame,dav1d]" --triplet x64-windows
+   ```
+
+   **Linux** — take FFmpeg from the distribution instead of vcpkg, so vcpkg
+   doesn't spend tens of minutes compiling it:
+
+   ```bash
+   sudo apt install libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
+                    libx11-dev libxrandr-dev libxcursor-dev libxi-dev libxext-dev \
+                    libgl1-mesa-dev libudev-dev libasound2-dev
+   vcpkg install sfml imgui-sfml cxxopts nlohmann-json glad[loader] --triplet x64-linux
+   ```
+
+3. Configure and build. The toolchain file is what makes `find_package` find
+   everything above — without it the configure step fails.
+
+   ```bash
+   cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+         -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+   cmake --build build --parallel 6
+   ```
+
+4. Run it. On Windows the vcpkg runtime DLLs have to be reachable, either by
+   adding `<VCPKG_ROOT>\installed\x64-windows\bin` to `PATH`, or by copying the
+   DLLs next to the executable:
+
+   ```bash
+   # Windows
+   build\ShadertoyEmulator.exe shader.glsl
+
+   # Linux
+   ./build/ShadertoyEmulator shader.glsl
+   ```
+
+### Tests
+
+Requires Python 3 with Pillow; the video case additionally needs `ffprobe` on
+`PATH`. The executable defaults to the Windows path, so Linux has to point at
+it explicitly:
+
 ```bash
-mkdir build && cd build
-cmake ..
-cmake --build .
+python tests/run_tests.py                                  # Windows
+python tests/run_tests.py --exe build/ShadertoyEmulator    # Linux
 ```
 
 ## Usage

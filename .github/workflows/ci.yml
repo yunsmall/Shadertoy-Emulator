@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # 与本机 vcpkg 对齐。上游一旦更新 SFML / ImGui-SFML 的 port，这里可能在没有改代码的情况下编不过，
+  # 钉住 commit 才能让 CI 变红等价于代码有问题
+  VCPKG_COMMIT: 82e69bce83f53191d728414ac24922e8496e34c4
+  VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg_cache,readwrite"
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build xvfb libgl1-mesa-dri python3-pil ffmpeg \
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
+            libx11-dev libxrandr-dev libxcursor-dev libxi-dev libxext-dev libxrender-dev \
+            libgl1-mesa-dev libudev-dev libasound2-dev
+
+      - name: 缓存 vcpkg 依赖
+        uses: actions/cache@v4
+        with:
+          path: |
+            vcpkg/installed
+            vcpkg_cache
+          key: vcpkg-linux-${{ env.VCPKG_COMMIT }}
+
+      - name: 装 vcpkg 与依赖
+        run: |
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg
+          git -C vcpkg checkout "$VCPKG_COMMIT"
+          ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          # ffmpeg 用发行版的 libav*-dev：CMakeLists 里 find_package(FFMPEG) 找不到会回退 pkg-config，
+          # 这样能省掉 vcpkg 从源码编 ffmpeg 的那几十分钟
+          ./vcpkg/vcpkg install sfml imgui-sfml cxxopts nlohmann-json "glad[loader]" \
+            --triplet x64-linux
+
+      - name: 配置与构建
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake"
+          cmake --build build --parallel
+
+      # 离屏模式也要真实的 GL 上下文（sf::Context 走 GLX），无头机器上得靠 Xvfb + Mesa 软件渲染
+      - name: 跑测试
+        run: |
+          xvfb-run -a -s "-screen 0 1280x720x24" \
+            env LIBGL_ALWAYS_SOFTWARE=1 \
+            python3 tests/run_tests.py --exe build/ShadertoyEmulator
+
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 缓存 vcpkg 依赖
+        uses: actions/cache@v4
+        with:
+          path: |
+            vcpkg/installed
+            vcpkg_cache
+          key: vcpkg-windows-${{ env.VCPKG_COMMIT }}
+
+      - name: 装 vcpkg 与依赖
+        shell: pwsh
+        run: |
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg
+          git -C vcpkg checkout "$env:VCPKG_COMMIT"
+          ./vcpkg/bootstrap-vcpkg.bat -disableMetrics
+          # 只装 x264：测试的视频用例只要求 H.264，AAC 是 ffmpeg 自带的。
+          # 本机那套六个 feature 会让首次构建再多个几十分钟
+          ./vcpkg/vcpkg install sfml imgui-sfml cxxopts nlohmann-json "glad[loader]" "ffmpeg[x264]" `
+            --triplet x64-windows
+
+      - name: 配置与构建
+        shell: pwsh
+        run: |
+          cmake -B build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake"
+          cmake --build build --config Release --parallel
+
+      - name: 装测试依赖
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade Pillow
+          # Windows runner 不预装 ffmpeg，而视频用例要用 ffprobe 校验结果
+          choco install ffmpeg -y --no-progress
+
+      - name: 跑测试
+        shell: pwsh
+        run: python tests/run_tests.py --exe build/Release/ShadertoyEmulator.exe
+
+      - name: 打包
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item build/Release/ShadertoyEmulator.exe dist/
+          if (Get-ChildItem build/Release/*.dll -ErrorAction SilentlyContinue) {
+            Copy-Item build/Release/*.dll dist/
+          } else {
+            # vcpkg 的 applocal 没把依赖 DLL 放到 exe 旁边时，退回全量拷贝
+            Copy-Item vcpkg/installed/x64-windows/bin/*.dll dist/
+          }
+          Copy-Item -Recurse shaders dist/shaders
+          Copy-Item README.md dist/
+          Compress-Archive -Path dist/* -DestinationPath "ShadertoyEmulator-${{ github.ref_name }}-win64.zip"
+
+      - name: 发布
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ShadertoyEmulator-*-win64.zip
