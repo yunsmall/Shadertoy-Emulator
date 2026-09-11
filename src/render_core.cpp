@@ -272,6 +272,10 @@ std::string RenderCore::wrapProcessedShader(const std::string& processedCode) {
 
     // 添加 main 函数
     shader << "void main() {\n";
+    // 先落一个确定值。GLSL 的 out 参数是「被调用者定义」的：mainImage 里没写到的那几个
+    // 分量算未定义，调用者给的值不作数——shader 只写 .rgb 时这个 .a 照样会丢，只有
+    // mainImage 整个被优化掉才留得住。所以别指望这一行，存 PNG 时另有一道兜底
+    shader << "    fragColor = vec4(0.0, 0.0, 0.0, 1.0);\n";
     shader << "    float _frame = float(iFrame);\n";
     shader << "    mainImage(fragColor, gl_FragCoord.xy);\n";
     shader << "}\n";
