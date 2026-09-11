@@ -892,144 +892,8 @@ GLTexture* ShadertoyEmulator::getChannelTexture(const ChannelInput& input) {
         }
         std::cerr << "Buffer not found: " << input.source << std::endl;
         return nullptr;
-    } else {
-        // 加载文件纹理 - 缓存 key 包含所有配置
-        std::string cacheKey = input.source
-            + (input.flipY ? ":flip" : "")
-            + ":" + std::to_string(static_cast<int>(input.filter))
-            + ":" + std::to_string(static_cast<int>(input.wrap));
-        auto it = m_textureCache.find(cacheKey);
-        if (it != m_textureCache.end()) {
-            return it->second.get();
-        }
-
-        // 从文件加载
-        if (loadTextureFile(input)) {
-            return m_textureCache[cacheKey].get();
-        }
-        return nullptr;
     }
-}
-
-bool ShadertoyEmulator::loadTextureFile(const ChannelInput& input) {
-    std::filesystem::path fullPath = m_config.getBasePath() / input.source;
-
-    // 使用 SFML 加载图片
-    sf::Image image;
-    if (!image.loadFromFile(fullPath.string())) {
-        std::cerr << "Failed to load texture: " << fullPath << std::endl;
-        return false;
-    }
-
-    // 如果需要翻转，使用 SFML 的 flip 函数
-    if (input.flipY) {
-        image.flipVertically();
-    }
-
-    auto texture = std::make_unique<GLTexture>();
-
-    glGenTextures(1, &texture->id);
-    glBindTexture(GL_TEXTURE_2D, texture->id);
-
-    sf::Vector2u size = image.getSize();
-    texture->width = static_cast<int>(size.x);
-    texture->height = static_cast<int>(size.y);
-
-    // 使用 GL_RGBA32F 存储纹理数据
-    std::vector<float> floatData(size.x * size.y * 4);
-    const uint8_t* pixelData = image.getPixelsPtr();
-
-    for (size_t i = 0; i < size.x * size.y * 4; i += 4) {
-        floatData[i + 0] = pixelData[i + 0] / 255.0f;
-        floatData[i + 1] = pixelData[i + 1] / 255.0f;
-        floatData[i + 2] = pixelData[i + 2] / 255.0f;
-        floatData[i + 3] = pixelData[i + 3] / 255.0f;
-    }
-
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, size.x, size.y, 0, GL_RGBA, GL_FLOAT, floatData.data());
-
-    // 设置 filter
-    switch (input.filter) {
-        case ChannelInput::Filter::Nearest:
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-            break;
-        case ChannelInput::Filter::Mipmap:
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glGenerateMipmap(GL_TEXTURE_2D);
-            texture->mipmapDirty = false;  // 文件纹理内容不会再变，生成一次就够
-            break;
-        case ChannelInput::Filter::Linear:
-        default:
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            break;
-    }
-
-    // 设置 wrap
-    switch (input.wrap) {
-        case ChannelInput::Wrap::Repeat:
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-            break;
-        case ChannelInput::Wrap::Mirror:
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_MIRRORED_REPEAT);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_MIRRORED_REPEAT);
-            break;
-        case ChannelInput::Wrap::Clamp:
-        default:
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            break;
-    }
-
-    // 缓存 key 包含所有配置
-    std::string cacheKey = input.source
-        + (input.flipY ? ":flip" : "")
-        + ":" + std::to_string(static_cast<int>(input.filter))
-        + ":" + std::to_string(static_cast<int>(input.wrap));
-    m_textureCache[cacheKey] = std::move(texture);
-    std::cout << "Loaded texture: " << fullPath << std::endl;
-    return true;
-}
-
-GLuint ShadertoyEmulator::getSampler(ChannelInput::Filter filter, ChannelInput::Wrap wrap) {
-    const size_t index = static_cast<size_t>(filter) * 3 + static_cast<size_t>(wrap);
-    if (m_samplerCache[index]) {
-        return m_samplerCache[index];
-    }
-
-    GLuint sampler = 0;
-    glGenSamplers(1, &sampler);
-
-    switch (filter) {
-        case ChannelInput::Filter::Nearest:
-            glSamplerParameteri(sampler, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-            glSamplerParameteri(sampler, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-            break;
-        case ChannelInput::Filter::Mipmap:
-            glSamplerParameteri(sampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-            glSamplerParameteri(sampler, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            break;
-        case ChannelInput::Filter::Linear:
-        default:
-            glSamplerParameteri(sampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glSamplerParameteri(sampler, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            break;
-    }
-
-    GLenum wrapMode = GL_CLAMP_TO_EDGE;
-    if (wrap == ChannelInput::Wrap::Repeat) {
-        wrapMode = GL_REPEAT;
-    } else if (wrap == ChannelInput::Wrap::Mirror) {
-        wrapMode = GL_MIRRORED_REPEAT;
-    }
-    glSamplerParameteri(sampler, GL_TEXTURE_WRAP_S, wrapMode);
-    glSamplerParameteri(sampler, GL_TEXTURE_WRAP_T, wrapMode);
-
-    m_samplerCache[index] = sampler;
-    return sampler;
+    return m_textures.get(input, m_config.getBasePath());
 }
 
 // 绑定 pass 的 4 个输入通道，并把各通道实际纹理的尺寸报到 iChannelResolution。
@@ -1047,7 +911,7 @@ void ShadertoyEmulator::bindChannels(RenderPass& pass) {
         tex->bind(i);
 
         // 采样参数交给 sampler object，纹理自身状态一个字节都不动
-        glBindSampler(i, getSampler(pass.channels[i]->filter, pass.channels[i]->wrap));
+        glBindSampler(i, m_textures.sampler(pass.channels[i]->filter, pass.channels[i]->wrap));
 
         // Buffer 内容每帧都变，mipmap 得重新生成；dirty 标记保证一帧内只生成一次
         if (pass.channels[i]->filter == ChannelInput::Filter::Mipmap
@@ -1109,12 +973,12 @@ void ShadertoyEmulator::renderPass(RenderPass& pass) {
 }
 
 // 按名字找 pass，调试视图和 --dump-buffers 都靠它把命令行写的名字对上实际场景
-ShadertoyEmulator::RenderPass* ShadertoyEmulator::findPass(const std::string& name) {
+RenderPass* ShadertoyEmulator::findPass(const std::string& name) {
     auto it = m_passMap.find(name);
     return it == m_passMap.end() ? nullptr : it->second;
 }
 
-ShadertoyEmulator::RenderPass* ShadertoyEmulator::debugViewPass() {
+RenderPass* ShadertoyEmulator::debugViewPass() {
     if (m_debugViewPass.empty()) return nullptr;
 
     RenderPass* pass = findPass(m_debugViewPass);
@@ -1587,7 +1451,8 @@ void ShadertoyEmulator::renderSoundBatch(int batchSamples) {
             if (tex) {
                 glActiveTexture(GL_TEXTURE0 + ch);
                 glBindTexture(GL_TEXTURE_2D, tex->id);
-                glBindSampler(ch, getSampler(m_soundPass->channels[ch]->filter, m_soundPass->channels[ch]->wrap));
+                glBindSampler(ch, m_textures.sampler(m_soundPass->channels[ch]->filter,
+                                                     m_soundPass->channels[ch]->wrap));
                 if (m_soundPass->locChannels[ch] >= 0) {
                     m_soundPass->shader.setUniform(uniformName, sf::Shader::CurrentTexture);
                 }

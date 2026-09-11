@@ -1,0 +1,19 @@
+{
+  "name": "Texture Channel",
+  "width": 64,
+  "height": 64,
+  "passes": [
+    {
+      "name": "Image",
+      "shader": "image.glsl",
+      "channels": {
+        "0": {
+          "type": "texture",
+          "source": "pattern.png",
+          "filter": "nearest",
+          "wrap": "clamp"
+        }
+      }
+    }
+  ]
+}

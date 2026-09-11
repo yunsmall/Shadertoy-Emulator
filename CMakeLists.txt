@@ -24,6 +24,7 @@ add_executable(${PROJECT_NAME}
     src/shader_config.cpp
     src/glsl_preprocessor.cpp
     src/sound_stream.cpp
+    src/texture_cache.cpp
     src/video_writer.cpp
 )
 target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_SOURCE_DIR}/include ${FFMPEG_INCLUDE_DIRS})

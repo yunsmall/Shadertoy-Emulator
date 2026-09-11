@@ -2,7 +2,9 @@
 
 #include "shader_config.hpp"
 #include "gl_framebuffer.hpp"
+#include "render_pass.hpp"
 #include "sound_stream.hpp"
+#include "texture_cache.hpp"
 #include "run_options.hpp"
 #include "video_writer.hpp"
 #include <SFML/Graphics.hpp>
@@ -24,42 +26,6 @@ public:
     void run();
 
 private:
-    // 渲染通道（运行时）
-    struct RenderPass {
-        std::string name;
-        sf::Shader shader;
-        std::unique_ptr<GLFramebuffer> framebuffer;      // 主 FBO（浮点纹理）
-        std::unique_ptr<GLFramebuffer> framebufferAlt;   // 双缓冲备用
-        std::array<std::optional<ChannelInput>, 4> channels;
-        int width;
-        int height;
-        bool useWindowResolution = false;  // 是否使用窗口分辨率
-        bool useDoubleBuffer = false;
-        int currentBuffer = 0;
-        bool isImage = false;
-        bool isSound = false;
-
-        // 编译后预查的 uniform location。-1 表示 shader 里没有这个 uniform
-        // （GLSL 编译器会把没用到的优化掉），这时不能调 setUniform，否则 SFML 每帧刷一行警告
-        GLint locIResolution = -1, locITime = -1, locITimeDelta = -1, locIFrame = -1;
-        GLint locIFrameRate = -1, locIMouse = -1, locIDate = -1;
-        GLint locChannelResolution = -1, locChannelTime = -1;
-        GLint locISampleRate = -1, locISampleOffset = -1;
-        std::array<GLint, 4> locChannels = {-1, -1, -1, -1};
-
-        GLFramebuffer* getWriteTarget() {
-            return useDoubleBuffer ? (currentBuffer == 0 ? framebuffer.get() : framebufferAlt.get())
-                                   : framebuffer.get();
-        }
-        GLFramebuffer* getReadTarget() {
-            return useDoubleBuffer ? (currentBuffer == 0 ? framebufferAlt.get() : framebuffer.get())
-                                   : framebuffer.get();
-        }
-        void swapBuffer() {
-            if (useDoubleBuffer) currentBuffer = 1 - currentBuffer;
-        }
-    };
-
     // 初始化
     void initPasses();
     bool loadShader(RenderPass& pass, const PassConfig& config);
@@ -82,8 +48,6 @@ private:
 
     // 纹理管理
     GLTexture* getChannelTexture(const ChannelInput& input);
-    bool loadTextureFile(const ChannelInput& input);
-    GLuint getSampler(ChannelInput::Filter filter, ChannelInput::Wrap wrap);
 
     // 键盘输入
     void initKeyboardTexture();
@@ -169,8 +133,8 @@ private:
     std::vector<std::unique_ptr<RenderPass>> m_passes;
     std::map<std::string, RenderPass*> m_passMap;
 
-    // 外部纹理缓存 (SFML 纹理用于文件加载，转换为 GLTexture)
-    std::map<std::string, std::unique_ptr<GLTexture>> m_textureCache;
+    // 文件纹理与采样器缓存
+    TextureCache m_textures;
 
     // 缩略图：勾上才刷新，平时一点 GPU 开销都不花。
     // 每个 buffer 一张自己的 FBO。ImGui-SFML 的 ImTextureID 就是 GL 纹理名，
@@ -186,11 +150,6 @@ private:
     float m_probeLastX = -1.0f;
     float m_probeLastY = -1.0f;
     int m_probeIdleFrames = 0;
-
-    // 采样器缓存，下标 = filter * 3 + wrap（两者各只有 3 种取值，直接查表，比 map 更快）
-    // 采样参数挂在 sampler object 上，就不必每帧改纹理自身的状态，
-    // 同一纹理也才能被不同通道以各自的 filter/wrap 采样
-    std::array<GLuint, 9> m_samplerCache{};
 
     // 时间相关
     std::chrono::high_resolution_clock::time_point m_startTime;
