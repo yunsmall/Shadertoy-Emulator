@@ -110,13 +110,11 @@
         },
         "filter": {
           "enum": ["linear", "nearest", "mipmap"],
-          "default": "linear",
-          "description": "纹理过滤方式"
+          "description": "纹理过滤方式。不填按通道类型取缺省：texture 用 mipmap，buffer/keyboard 用 linear"
         },
         "wrap": {
           "enum": ["clamp", "repeat", "mirror"],
-          "default": "clamp",
-          "description": "纹理环绕方式"
+          "description": "纹理环绕方式。不填按通道类型取缺省：texture 用 repeat，buffer/keyboard 用 clamp"
         },
         "flipY": {
           "type": "boolean",

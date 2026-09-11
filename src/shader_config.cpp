@@ -23,13 +23,22 @@ std::optional<ChannelInput> ChannelInput::fromJson(const std::string& typeStr, c
         return std::nullopt;
     }
 
+    // filter/wrap 传空串表示配置里没写，缺省值按通道类型分：纹理跟着 Shadertoy 走
+    // （mipmap + repeat）；buffer 和 keyboard 是数据不是图，插值会把相邻像素或键位
+    // 糊在一起，越界也该夹住而不是平铺
+    const bool isTexture = (input.type == Type::Texture);
+    const Filter defaultFilter = isTexture ? Filter::Mipmap : Filter::Linear;
+    const Wrap defaultWrap = isTexture ? Wrap::Repeat : Wrap::Clamp;
+
     // 解析 filter
     if (filterStr == "nearest") {
         input.filter = Filter::Nearest;
     } else if (filterStr == "mipmap") {
         input.filter = Filter::Mipmap;
+    } else if (filterStr == "linear") {
+        input.filter = Filter::Linear;
     } else {
-        input.filter = Filter::Linear;  // 默认
+        input.filter = defaultFilter;  // 没写，或者写了不认识的值
     }
 
     // 解析 wrap
@@ -37,8 +46,10 @@ std::optional<ChannelInput> ChannelInput::fromJson(const std::string& typeStr, c
         input.wrap = Wrap::Repeat;
     } else if (wrapStr == "mirror") {
         input.wrap = Wrap::Mirror;
+    } else if (wrapStr == "clamp") {
+        input.wrap = Wrap::Clamp;
     } else {
-        input.wrap = Wrap::Clamp;  // 默认
+        input.wrap = defaultWrap;
     }
 
     return input;
@@ -119,8 +130,9 @@ bool ShaderConfig::load(const std::string& jsonPath) {
                         const int channelIndex = key[0] - '0';
 
                         if (value.contains("type") && value.contains("source")) {
-                            std::string filterStr = value.contains("filter") ? value["filter"].get<std::string>() : "linear";
-                            std::string wrapStr = value.contains("wrap") ? value["wrap"].get<std::string>() : "clamp";
+                            // 空串 = 没写，具体缺省由 fromJson 按通道类型决定
+                            std::string filterStr = value.contains("filter") ? value["filter"].get<std::string>() : "";
+                            std::string wrapStr = value.contains("wrap") ? value["wrap"].get<std::string>() : "";
                             bool flipY = value.contains("flipY") ? value["flipY"].get<bool>() : false;
 
                             auto input = ChannelInput::fromJson(
@@ -137,20 +149,24 @@ bool ShaderConfig::load(const std::string& jsonPath) {
                         // 兼容旧格式 "path" 和 "name"
                         else if (value.contains("type")) {
                             std::string typeStr = value["type"].get<std::string>();
-                            if (typeStr == "texture" && value.contains("path")) {
-                                ChannelInput input;
-                                input.type = ChannelInput::Type::Texture;
-                                input.source = value["path"].get<std::string>();
-                                pass.channels[channelIndex] = input;
-                            } else if (typeStr == "buffer" && value.contains("name")) {
-                                ChannelInput input;
-                                input.type = ChannelInput::Type::Buffer;
-                                input.source = value["name"].get<std::string>();
-                                pass.channels[channelIndex] = input;
-                            } else if (typeStr == "keyboard") {
-                                ChannelInput input;
-                                input.type = ChannelInput::Type::Keyboard;
-                                pass.channels[channelIndex] = input;
+                            // 旧格式：path/name 顶 source，键盘没有 source，也都没有
+                            // filter/wrap——一样交给 fromJson 按类型取缺省
+                            std::string source;
+                            bool valid = true;
+                            if (typeStr == "texture") {
+                                valid = value.contains("path");
+                                if (valid) source = value["path"].get<std::string>();
+                            } else if (typeStr == "buffer") {
+                                valid = value.contains("name");
+                                if (valid) source = value["name"].get<std::string>();
+                            } else if (typeStr != "keyboard") {
+                                valid = false;
+                            }
+                            if (valid) {
+                                auto input = ChannelInput::fromJson(typeStr, source, "", "", false);
+                                if (input) {
+                                    pass.channels[channelIndex] = input;
+                                }
                             }
                         }
                     }

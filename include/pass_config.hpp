@@ -12,11 +12,13 @@ struct ChannelInput {
 
     Type type;
     std::string source;  // 文件路径或Buffer名称
+    // 这两个只是内存初值，不是配置缺省值——缺省按通道类型分，在 fromJson 里定
+    // （纹理 mipmap + repeat，buffer/keyboard linear + clamp）
     Filter filter = Filter::Linear;
     Wrap wrap = Wrap::Clamp;
     bool flipY = false;  // 是否上下翻转
 
-    // JSON反序列化
+    // JSON反序列化。filterStr/wrapStr 传空串表示配置里没写，按 type 取缺省
     static std::optional<ChannelInput> fromJson(const std::string& typeStr, const std::string& source,
                                                   const std::string& filterStr, const std::string& wrapStr,
                                                   bool flipY = false);

@@ -104,8 +104,8 @@
 |------|------|------|--------|------|
 | `type` | string | **是** | - | 输入类型：`"texture"`、`"buffer"` 或 `"keyboard"` |
 | `source` | string | 条件 | - | 纹理文件路径或Buffer名称（texture/buffer必填） |
-| `filter` | string | 否 | `"linear"` | 纹理过滤：`"linear"`、`"nearest"` 或 `"mipmap"` |
-| `wrap` | string | 否 | `"clamp"` | 纹理环绕：`"clamp"`、`"repeat"` 或 `"mirror"` |
+| `filter` | string | 否 | 按type定，见下 | 纹理过滤：`"linear"`、`"nearest"` 或 `"mipmap"` |
+| `wrap` | string | 否 | 按type定，见下 | 纹理环绕：`"clamp"`、`"repeat"` 或 `"mirror"` |
 | `flipY` | bool | 否 | `false` | 是否上下翻转纹理（仅texture类型） |
 
 ### type 类型说明
@@ -138,17 +138,29 @@
 
 | 值 | 说明 |
 |------|------|
-| `"linear"` | 双线性过滤（默认，适合大多数情况） |
+| `"linear"` | 双线性过滤（buffer / keyboard 的缺省） |
 | `"nearest"` | 最近邻过滤（像素风格、需要精确采样） |
-| `"mipmap"` | 三线性过滤 + mipmap（适合需要 LOD 的纹理，如噪声纹理） |
+| `"mipmap"` | 三线性过滤 + mipmap（texture 的缺省，适合需要 LOD 的纹理，如噪声纹理） |
 
 ### wrap 环绕模式
 
 | 值 | 说明 |
 |------|------|
-| `"clamp"` | 边缘拉伸（默认） |
-| `"repeat"` | 平铺重复 |
+| `"clamp"` | 边缘拉伸（buffer / keyboard 的缺省） |
+| `"repeat"` | 平铺重复（texture 的缺省） |
 | `"mirror"` | 镜像重复 |
+
+### 缺省值
+
+`filter` 和 `wrap` 都不写时按 `type` 取缺省，和 Shadertoy 一致：
+
+| type | filter 缺省 | wrap 缺省 |
+|------|------|------|
+| `"texture"` | `"mipmap"` | `"repeat"` |
+| `"buffer"` | `"linear"` | `"clamp"` |
+| `"keyboard"` | `"linear"` | `"clamp"` |
+
+buffer 和 keyboard 是数据不是图：线性插值会把相邻像素或键位糊在一起，越界也该夹住而不是平铺。
 
 ### 通道配置示例
 
