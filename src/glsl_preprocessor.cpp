@@ -104,40 +104,19 @@ std::string GlslPreprocessor::process(const std::string& code,
     return processCode(code, basePath, maxIncludeDepth);
 }
 
-std::string GlslPreprocessor::continueProcess(const std::string& code,
-                                               const std::filesystem::path& basePath,
-                                               int maxIncludeDepth) {
-    if (shouldUseExternal()) {
-        return runExternalPreprocessor(code, basePath);
-    }
-    // 不清空宏定义，保留之前定义的宏
-    m_includedFiles.clear();  // 但清除包含记录，允许处理新文件
-    m_conditionStack.clear();
-    return processCode(code, basePath, maxIncludeDepth);
-}
-
 // ========== 外部预处理器实现 ==========
-
-std::string GlslPreprocessor::processFile(const std::filesystem::path& filePath) {
-    // 读取文件内容
-    std::ifstream file(filePath);
-    if (!file.is_open()) {
-        std::cerr << "GLSL Preprocessor: cannot open file: " << filePath << std::endl;
-        return "";
-    }
-    std::stringstream buffer;
-    buffer << file.rdbuf();
-
-    if (shouldUseExternal()) {
-        return runExternalPreprocessor(buffer.str(), filePath.parent_path());
-    }
-    return processCode(buffer.str(), filePath.parent_path(), 10);
-}
 
 std::string GlslPreprocessor::runExternalPreprocessor(const std::string& code,
                                                        const std::filesystem::path& basePath) {
-    // 创建临时文件（放在 basePath 目录下，这样 #include 相对路径能正确工作）
-    std::filesystem::path tempFile = basePath / ".glsl_preprocess_temp.frag";
+    // 临时文件（放在 basePath 目录下，这样 #include 相对路径能正确工作）。
+    // 名字带上进程号：固定名字在两份配置同时跑同一个目录时会互相踩
+#ifdef _WIN32
+    const unsigned long pid = GetCurrentProcessId();
+#else
+    const unsigned long pid = static_cast<unsigned long>(getpid());
+#endif
+    const std::filesystem::path tempFile =
+        basePath / (".glsl_preprocess_" + std::to_string(pid) + ".frag");
 
     // 写入代码。glslangValidator 默认不认 #include，得显式请求 GL_GOOGLE_include_directive
     {
@@ -179,13 +158,27 @@ std::string GlslPreprocessor::runExternalPreprocessor(const std::string& code,
     }
 
 #ifdef _WIN32
-    _pclose(pipe);
+    const bool succeeded = (_pclose(pipe) == 0);
 #else
-    pclose(pipe);
+    const int status = pclose(pipe);
+    const bool succeeded = WIFEXITED(status) && WEXITSTATUS(status) == 0;
 #endif
 
     // 删除临时文件
     std::filesystem::remove(tempFile);
+
+    // 失败时它把报错和半成品一起堆在 stdout 上，直接当结果返回的话，下游只会看到
+    // "shader 编译失败"，真正的原因（哪一行、什么错）就埋了。这里报出来并返回空串，
+    // 和内置预处理器失败时的行为对齐
+    if (!succeeded) {
+        std::cerr << "GLSL Preprocessor: glslangValidator failed" << std::endl;
+        // 具体错误它多半已经写到 stderr 了（会直接漏到终端），但有些情况只在 stdout，
+        // 这里补上，免得两头都不显示
+        if (!output.empty()) {
+            std::cerr << output << std::endl;
+        }
+        return "";
+    }
 
     // 把为了 include 才加的扩展声明剔掉，否则 GPU 驱动会对不认识的扩展报警告
     std::string cleaned;

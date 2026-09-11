@@ -1,0 +1,17 @@
+{
+  "$schema": "../../shaders/config.schema.json",
+  "name": "Sound Common Test",
+  "width": 64,
+  "height": 64,
+  "common": "common.glsl",
+  "passes": [
+    {
+      "name": "Image",
+      "shader": "image.glsl"
+    },
+    {
+      "name": "Sound",
+      "shader": "sound-common.glsl"
+    }
+  ]
+}

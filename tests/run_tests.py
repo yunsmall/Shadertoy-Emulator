@@ -7,18 +7,18 @@
 用法：
     python tests/run_tests.py [--exe build/ShadertoyEmulator.exe] [--keep]
 
-依赖：Pillow
+依赖：Pillow、numpy
 """
 import argparse
 import json
 import shutil
-import struct
 import subprocess
 import sys
 import tempfile
 import wave
 from pathlib import Path
 
+import numpy as np
 from PIL import Image
 
 # Windows 上 Python 默认按 cp1252 编码标准输出，打印中文用例名会抛 UnicodeEncodeError，
@@ -168,10 +168,10 @@ def case_selfref_read(exe, out):
 
 
 def case_sound(exe, out):
-    """Sound pass：440Hz 正弦波的频率和幅度（用 --dump-audio 导出，离屏也能跑）"""
+    """Sound pass：频谱。左右声道各几个已知频率，用 FFT 核对峰值位置、幅度和声道隔离"""
     wav = out / "audio.wav"
-    # 音频长度是 帧数/fps，60 帧正好 1 秒。窗口太短的话过零率只能数出整数个过零点，
-    # 量化误差能差出几十 Hz
+    # 音频长度是 帧数/fps，60 帧正好 1 秒。整数频率只有落在整数号 bin 上才不会漏能量，
+    # 所以窗口必须正好整秒
     export(exe, ["tests/sound/config.json", "--images", "0:60:1",
                  "--dump-audio", str(wav)], out)
 
@@ -183,20 +183,67 @@ def case_sound(exe, out):
         frames = w.getnframes()
         raw = w.readframes(frames)
 
-    left = struct.unpack(f"<{frames * 2}h", raw)[0::2]
-    peak = max(abs(s) for s in left)
-    if peak < 32767 * 0.4:
-        print(f"    峰值 {peak}，期望约 {int(32767 * 0.5)}")
+    if frames != 44100:
+        print(f"    音频 {frames} 帧，期望 44100（正好 1 秒）")
         return False
 
-    # 过零率估频，跳过开头 0.05 秒避开起始瞬态
-    start = int(0.05 * 44100)
-    crossings = sum(1 for i in range(start + 1, len(left)) if (left[i - 1] < 0) != (left[i] < 0))
-    freq = crossings / 2.0 / ((len(left) - start) / 44100.0)
-    if abs(freq - 440.0) > 5.0:
-        print(f"    估算频率 {freq:.1f}Hz，期望 440Hz")
+    samples = np.frombuffer(raw, dtype="<i2").astype(np.float64) / 32767.0
+    left = samples[0::2]
+    right = samples[1::2]
+
+    # 每个声道：自己该有的峰，以及只有对面才有的频率——后者有值就是串道
+    channels = [
+        ("左", left, [(440, 0.30), (1000, 0.20), (3000, 0.10)], (700, 2000)),
+        ("右", right, [(700, 0.40), (2000, 0.25)], (440, 1000, 3000)),
+    ]
+
+    ok = True
+    for name, channel, peaks, others in channels:
+        # 单边谱除以 N/2 之后，峰值就等于该正弦的幅度
+        mag = np.abs(np.fft.rfft(channel)) / (len(channel) / 2)
+
+        for freq, want in peaks:
+            got = mag[freq]
+            if abs(got - want) > want * 0.05:
+                ok = False
+                print(f"    {name}声道 {freq}Hz 幅度 {got:.4f}，期望 {want}")
+
+        for freq in others:
+            if mag[freq] > 0.01:
+                ok = False
+                print(f"    {name}声道串入了 {freq}Hz，幅度 {mag[freq]:.4f}")
+    return ok
+
+
+def case_sound_common(exe, out):
+    """Sound 引用 common 里的函数：公共代码只能展开一次，展开两遍会撞成重复定义"""
+    wav = out / "audio.wav"
+    export(exe, ["tests/sound/config-common.json", "--images", "0:60:1",
+                 "--dump-audio", str(wav)], out)
+
+    if not wav.exists():
+        # shader 编译不过就不会有音频，连文件都不建
+        print("    没有音频输出，Sound pass 大概没编译过")
         return False
-    return True
+
+    with wave.open(str(wav), "rb") as w:
+        frames = w.getnframes()
+        raw = w.readframes(frames)
+    if frames != 44100:
+        print(f"    音频 {frames} 帧，期望 44100（正好 1 秒）")
+        return False
+
+    samples = np.frombuffer(raw, dtype="<i2").astype(np.float64) / 32767.0
+
+    # 两个频率都出自 common.glsl 的 tone()，宏 TAU 也是那边定义的
+    ok = True
+    for name, channel, freq, want in (("左", samples[0::2], 440, 0.30),
+                                      ("右", samples[1::2], 700, 0.40)):
+        mag = np.abs(np.fft.rfft(channel)) / (len(channel) / 2)
+        if abs(mag[freq] - want) > want * 0.05:
+            ok = False
+            print(f"    {name}声道 {freq}Hz 幅度 {mag[freq]:.4f}，期望 {want}")
+    return ok
 
 
 def case_preprocessor(exe, out):
@@ -363,7 +410,8 @@ CASES = [
     ("ring3", "三节点成环引用", case_ring3),
     ("ring4", "四节点成环引用", case_ring4),
     ("selfref_read", "自引用 Buffer 被读取的时序", case_selfref_read),
-    ("sound", "Sound pass 输出（440Hz 正弦波）", case_sound),
+    ("sound", "Sound 频谱（频率/幅度/声道隔离）", case_sound),
+    ("sound-common", "Sound + common（函数定义不重复展开）", case_sound_common),
     ("preprocessor", "预处理器（内置 vs 外部对照）", case_preprocessor),
     ("video", "视频导出（帧数/时长/音轨同步）", case_video),
 ]

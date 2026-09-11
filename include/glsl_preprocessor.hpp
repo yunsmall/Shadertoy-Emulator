@@ -16,18 +16,11 @@ public:
     static void setDefaultMode(Mode mode) { s_defaultMode = mode; }
     static Mode getDefaultMode() { return s_defaultMode; }
 
-    // 预处理文件（外部预处理器直接处理文件）
-    std::string processFile(const std::filesystem::path& filePath);
-
-    // 预处理GLSL代码（清空状态后处理）
+    // 预处理GLSL代码。要共享宏的代码得先拼成一段再传进来——外部预处理器
+    // （glslangValidator）每次都是独立跑完整套，没有"接着上次的宏"这回事
     std::string process(const std::string& code,
                         const std::filesystem::path& basePath,
                         int maxIncludeDepth = 10);
-
-    // 继续处理（保留宏定义，用于处理后续代码）
-    std::string continueProcess(const std::string& code,
-                                const std::filesystem::path& basePath,
-                                int maxIncludeDepth = 10);
 
     // 清除状态（用于处理新文件时重置）
     void reset();
