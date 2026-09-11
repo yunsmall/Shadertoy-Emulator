@@ -71,6 +71,10 @@ jobs:
 
   windows:
     runs-on: windows-2022
+    # 发 Release 要写权限。GITHUB_TOKEN 默认是只读的，另外仓库设置里也得允许读写，
+    # 不然这行照样不生效（Settings → Actions → General → Workflow permissions）
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
