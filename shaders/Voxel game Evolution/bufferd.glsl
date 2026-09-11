@@ -523,6 +523,7 @@ rayCastResults rayCast(vec3 rayPos0, vec3 rayDir,int maxRayDist,vec4 range,int r
     res.color=vec3(-1.);
     res.fresnel=0.;
     res.mirror=false;
+    res.grass=false;  // 原 shader 漏了这行，未初始化的 bool 在某些驱动上是 true，会让非草像素拿不到材质色而全黑
     rayCastResults subRes;
     subRes.hit=false;
 

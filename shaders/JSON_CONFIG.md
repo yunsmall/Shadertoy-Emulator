@@ -58,12 +58,35 @@
 |------|------|------|--------|------|
 | `$schema` | string | 否 | - | JSON Schema 路径，仅供编辑器补全校验，程序忽略 |
 | `name` | string | 否 | "Shadertoy Emulator" | 窗口标题和shader名称 |
+| `url` | string | 否 | - | 着色器在 Shadertoy 上的原始页面地址 |
+| `description` | string | 否 | - | 着色器说明；对原版改过代码时必须写明 |
 | `width` | int | 否 | 1280 | 窗口宽度（像素） |
 | `height` | int | 否 | 720 | 窗口高度（像素） |
 | `resizable` | bool | 否 | `false` | 窗口是否可调整大小 |
 | `gui` | bool | 否 | `false` | 是否显示 ImGui 控制面板 |
 | `common` | string | 否 | - | 共享GLSL代码文件路径（相对于config.json） |
 | `passes` | array | **是** | - | 渲染通道列表，按顺序执行 |
+
+### url 与 description
+
+两个都是可选字段，只存元信息，**程序不读取它们的内容**，纯粹给人看。
+
+- `url`：着色器在 Shadertoy 上的原始页面地址，方便回溯作者和来源
+- `description`：着色器说明。**若相对 Shadertoy 原版改过代码，必须在这里写清楚改了哪个文件、改了什么、为什么改**
+
+本仓库收录的着色器原则上保持原样，改动只限于 bug 修复，绝不改变原有功能；凡是动过的地方都会写进 `description`。
+
+```json
+{
+  "$schema": "../config.schema.json",
+  "name": "Some Shader",
+  "url": "https://www.shadertoy.com/view/xxxxxxxx",
+  "description": "相对 Shadertoy 原版只做了一处 bug 修复，不涉及功能改动：image.glsl 里……",
+  "passes": [
+    { "name": "Image", "shader": "image.glsl" }
+  ]
+}
+```
 
 ## passes[] 通道配置
 

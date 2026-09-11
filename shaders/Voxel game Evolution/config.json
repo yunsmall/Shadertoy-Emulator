@@ -1,6 +1,7 @@
 {
   "$schema": "../config.schema.json",
   "name": "Voxel game Evolution",
+  "description": "相对 Shadertoy 原版只做了一处 bug 修复，不涉及任何功能改动：bufferd.glsl 的 rayCast() 补上了 res.grass = false;。原 shader 漏了对该字段的初始化，其值因此未定义；桌面 OpenGL 驱动下会读到非零的寄存器残留值（表现为 true），使第 812 行 if(res.hit && !res.grass) 恒为假，非草叶像素拿不到材质色而整片渲染成黑色。Shadertoy 的 WebGL 后端恰好把它解释为 false，所以在那边看不出问题。",
   "common": "common.glsl",
   "passes": [
     {
@@ -10,19 +11,23 @@
         "0": {
           "type": "buffer",
           "source": "BufferA",
-          "filter": "nearest"
+          "filter": "nearest",
+          "wrap": "clamp"
         },
         "1": {
           "type": "buffer",
           "source": "BufferB",
-          "filter": "nearest"
+          "filter": "nearest",
+          "wrap": "clamp"
         },
         "2": {
           "type": "keyboard"
         },
         "3": {
           "type": "buffer",
-          "source": "BufferD"
+          "source": "BufferD",
+          "filter": "linear",
+          "wrap": "clamp"
         }
       }
     },
@@ -33,17 +38,20 @@
         "0": {
           "type": "buffer",
           "source": "BufferA",
-          "filter": "nearest"
+          "filter": "nearest",
+          "wrap": "clamp"
         },
         "1": {
           "type": "buffer",
           "source": "BufferB",
-          "filter": "nearest"
+          "filter": "nearest",
+          "wrap": "clamp"
         },
         "2": {
           "type": "buffer",
           "source": "BufferC",
-          "filter": "nearest"
+          "filter": "nearest",
+          "wrap": "clamp"
         }
       }
     },
@@ -54,17 +62,20 @@
         "0": {
           "type": "buffer",
           "source": "BufferA",
-          "filter": "nearest"
+          "filter": "nearest",
+          "wrap": "clamp"
         },
         "1": {
           "type": "buffer",
           "source": "BufferB",
-          "filter": "nearest"
+          "filter": "nearest",
+          "wrap": "clamp"
         },
         "2": {
           "type": "buffer",
           "source": "BufferC",
-          "filter": "nearest"
+          "filter": "nearest",
+          "wrap": "clamp"
         }
       }
     },
@@ -75,21 +86,26 @@
         "0": {
           "type": "buffer",
           "source": "BufferA",
-          "filter": "nearest"
+          "filter": "nearest",
+          "wrap": "clamp"
         },
         "1": {
           "type": "buffer",
           "source": "BufferB",
-          "filter": "nearest"
+          "filter": "nearest",
+          "wrap": "clamp"
         },
         "2": {
           "type": "buffer",
           "source": "BufferC",
-          "filter": "nearest"
+          "filter": "nearest",
+          "wrap": "clamp"
         },
         "3": {
           "type": "buffer",
-          "source": "BufferD"
+          "source": "BufferD",
+          "filter": "linear",
+          "wrap": "clamp"
         }
       }
     },
@@ -100,21 +116,26 @@
         "0": {
           "type": "buffer",
           "source": "BufferA",
-          "filter": "nearest"
+          "filter": "nearest",
+          "wrap": "clamp"
         },
         "1": {
           "type": "buffer",
           "source": "BufferB",
-          "filter": "nearest"
+          "filter": "nearest",
+          "wrap": "clamp"
         },
         "2": {
           "type": "buffer",
           "source": "BufferC",
-          "filter": "nearest"
+          "filter": "nearest",
+          "wrap": "clamp"
         },
         "3": {
           "type": "buffer",
-          "source": "BufferD"
+          "source": "BufferD",
+          "filter": "linear",
+          "wrap": "clamp"
         }
       }
     }

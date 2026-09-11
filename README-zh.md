@@ -362,11 +362,13 @@ vec2 mainSound(int samp, float time) {
 
 ## 版权声明
 
-**`shaders/` 目录下的所有着色器均直接下载自 [Shadertoy](https://www.shadertoy.com/)，未做任何修改。**
+`shaders/` 目录下的着色器均来自 [Shadertoy](https://www.shadertoy.com/)。**一律保持原样：凡有改动，必定只是修
+bug，绝不改变原有功能**，且每一处都会写在该着色器 `config.json` 的 `description` 字段里。
 
 查找原作者和来源：
 - 搜索**文件夹名称**（如 "Rainforest"、"wormhole traversal"）
 - 或搜索 `config.json` 中的 **`name` 字段**
+- 若该着色器的 `config.json` 里填了 **`url` 字段**，直接访问即可
 
 本项目仅提供模拟器在本地运行这些着色器，所有着色器代码归 Shadertoy 上的原作者所有。
 

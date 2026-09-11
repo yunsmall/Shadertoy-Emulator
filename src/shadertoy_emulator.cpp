@@ -973,7 +973,9 @@ void ShadertoyEmulator::renderPass(RenderPass& pass) {
     // 绑定 FBO
     target->bind();
     glViewport(0, 0, pass.width, pass.height);
-    target->clear();
+    // 这里刻意不清屏：Shadertoy 的 buffer 也不清，着色器里 discard 掉的像素因此会保留
+    // 上一帧的内容，不少 shader 靠这个把数据攒在缓冲区里（比如 Voxel game Evolution
+    // 只在头几帧生成材质纹理，之后全靠"不写就保留"）
 
     // 绑定 shader
     sf::Shader::bind(&pass.shader);

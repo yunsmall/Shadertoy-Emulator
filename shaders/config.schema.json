@@ -13,6 +13,14 @@
       "type": "string",
       "description": "窗口标题，也是着色器名称"
     },
+    "url": {
+      "type": "string",
+      "description": "着色器在 Shadertoy 上的原始页面地址，方便回溯作者和来源"
+    },
+    "description": {
+      "type": "string",
+      "description": "着色器说明。若相对 Shadertoy 原版改过代码，必须在这里写清楚改了哪里、为什么改"
+    },
     "width": {
       "type": "integer",
       "minimum": 1,

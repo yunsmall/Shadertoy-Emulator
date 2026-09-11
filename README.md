@@ -368,11 +368,14 @@ The `shaders/` directory contains several examples:
 
 ## Attribution
 
-**All shaders in the `shaders/` directory are downloaded directly from [Shadertoy](https://www.shadertoy.com/) without any modification.**
+All shaders in the `shaders/` directory come from [Shadertoy](https://www.shadertoy.com/). **They are kept
+as-is: any change made here is a bug fix, never a behaviour change, and every one of them is spelled out in
+the `description` field of that shader's `config.json`.**
 
 To find the original author and source:
 - Search by the **folder name** (e.g., "Rainforest", "wormhole traversal")
 - Or search by the **`name` field** in the shader's `config.json`
+- Or follow the **`url` field**, if that shader's `config.json` provides one
 
 This project only provides an emulator to run these shaders locally. All shader code belongs to their respective original authors on Shadertoy.
 
