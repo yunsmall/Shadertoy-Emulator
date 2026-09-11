@@ -33,7 +33,8 @@ private:
     // 每帧
     void handleEvents();
     void beginFrame();  // 每帧开头算一次时间，保证所有 pass 看到同一份 iTime/iFrame
-    void renderPasses();
+    // intermediate=true 是跳帧模式的中间帧：buffer 只渲染状态链条上的通道
+    void renderPasses(bool intermediate = false);
     void renderToScreen();
     void presentToWindow();  // 把输出目标贴到窗口上，离屏模式不调用
 

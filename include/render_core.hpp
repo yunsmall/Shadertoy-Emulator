@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -44,8 +45,9 @@ public:
     // 按键状态上传到 iKeyboard 纹理。Shader 靠它认键盘
     void updateKeyboard(const std::array<bool, 256>& keys);
 
-    // 渲染全部 buffer pass，按 config 里的顺序走一遍
-    void renderBufferPasses(const FrameState& frame);
+    // 渲染 buffer pass，按 config 里的顺序走一遍。intermediate=true 是跳帧模式的
+    // 中间帧：只渲染状态链条上的通道（见 computeMustRunPasses），无状态的直接跳过
+    void renderBufferPasses(const FrameState& frame, bool intermediate = false);
 
     // 把画面贴到输出目标：debugName 指定的 pass 顶替 Image，没开就正常跑 Image
     void renderToScreen(const FrameState& frame, const std::string& debugName);
@@ -62,6 +64,8 @@ public:
 
     GLFramebuffer* outputTarget() { return m_outputTarget.get(); }
     const std::vector<std::unique_ptr<RenderPass>>& passes() const { return m_passes; }
+    // 跳帧模式的中间帧也得渲染的通道，依赖分析的结果。调用方拿它告诉使用者跳了谁
+    const std::set<RenderPass*>& mustRunEveryFrame() const { return m_mustRunEveryFrame; }
 
     // 把 pass 的内容缩进一张小纹理给 ImGui 用。走 GPU blit 而不是读回 CPU：
     // 读回会把管线卡住，一帧读好几个 buffer 很伤。尺寸对不上会重建目标
@@ -84,6 +88,9 @@ private:
     std::string wrapSoundShader(const std::string& processedCode);
     bool initSoundPass(RenderPass& pass);  // 编译不过返回 false，调用方当它不存在
     void initKeyboardTexture();
+    // 跳帧模式的中间帧该渲染哪些通道：输出传递依赖自己的（自引用、引用环）必须每帧走，
+    // 它们读到的通道也得跟着走。结果存进 m_mustRunEveryFrame
+    void computeMustRunPasses();
 
     // 渲染
     void updateUniforms(RenderPass& pass, int width, int height, const FrameState& frame);
@@ -105,6 +112,8 @@ private:
     std::unique_ptr<GLFramebuffer> m_outputTarget;
     std::vector<std::unique_ptr<RenderPass>> m_passes;
     std::map<std::string, RenderPass*> m_passMap;
+    // 跳帧模式的中间帧必须渲染的通道，computeMustRunPasses() 算出来的
+    std::set<RenderPass*> m_mustRunEveryFrame;
     TextureCache m_textures;
 
     // 键盘纹理。上一帧的按键状态只在这儿用，属于渲染状态而非输入状态

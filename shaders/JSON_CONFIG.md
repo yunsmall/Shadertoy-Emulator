@@ -474,7 +474,8 @@ ShadertoyEmulator config.json --images 0:300:1 --output-dir out/ --dump-audio ou
 | `--gui` / `--no-gui` | 强制开启/关闭 ImGui 面板（覆盖配置里的 `gui`） |
 | `--images <start:stop:step>` | **图片模式**：导出的帧范围，Python 切片语法，**不含 stop**，start 默认 0、step 默认 1、stop 必填 |
 | `--output-dir <dir>` | PNG 保存目录，用 `--images` 时必填（没有默认目录，不存在则自动创建），文件名为补零 5 位的帧号，如 `00000.png` |
-| `--skip-intermediate` | **图片模式**：只渲染 `--images` 选中的帧，跳过中间的。中间帧是为了喂 buffer 的状态，所以这个参数只适用于帧间无状态的 shader；自引用 buffer 这类反馈会算错，程序会警告但不拦 |
+| `--skip-intermediate` | **图片模式**：跳过中间那些没人依赖的帧。输出会传回给自己的通道（自引用 buffer、引用环）和它们读到的通道照常每帧渲染，所以结果和全渲染一致，只省下无状态的部分 |
+| `--force-skip-intermediate` | **图片模式**：不做依赖分析，中间帧一律不渲染。更快，但有帧间状态的 shader 会算错（检测到自引用 buffer 或 Sound pass 会警告，但照跑） |
 | `--video <file.mp4>` | **视频模式**：导出 H.264 + AAC 的 mp4，需搭配 `--duration` |
 | `--duration <秒>` | 视频时长，用 `--video` 时必填 |
 | `--fps <n>` | 导出帧率（默认 60）：图片模式决定 `iTime` 的步长，视频模式还决定输出帧率 |

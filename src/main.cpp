@@ -19,7 +19,8 @@ int main(int argc, char* argv[]) {
         ("no-gui", "Disable GUI (overrides config)")
         ("images", "Export a PNG sequence: frame range in Python slice syntax, e.g. 0:100:2 (stop required, excluded). Requires --output-dir", cxxopts::value<std::string>())
         ("output-dir", "Directory for the PNG sequence (required with --images)", cxxopts::value<std::string>())
-        ("skip-intermediate", "Only render the frames selected by --images, skipping the ones in between. For shaders without cross-frame state")
+        ("skip-intermediate", "Only render the frames selected by --images: the frames in between that nothing stateful depends on are skipped")
+        ("force-skip-intermediate", "Skip the frames in between without checking dependencies. Faster, but wrong for shaders with cross-frame state")
         ("video", "Export a video to this path. Requires --duration", cxxopts::value<std::string>())
         ("duration", "Length of the exported video in seconds (required with --video)", cxxopts::value<int>())
         ("dump-audio", "Also write the Sound pass output to a WAV file", cxxopts::value<std::string>())
@@ -71,6 +72,11 @@ int main(int argc, char* argv[]) {
         RunOptions runOptions;
         runOptions.showFps = result.count("show-fps") > 0;
         runOptions.skipIntermediate = result.count("skip-intermediate") > 0;
+        runOptions.forceSkipIntermediate = result.count("force-skip-intermediate") > 0;
+        if (runOptions.skipIntermediate && runOptions.forceSkipIntermediate) {
+            std::cerr << "--skip-intermediate and --force-skip-intermediate are mutually exclusive.\n";
+            return 1;
+        }
         runOptions.fps = static_cast<float>(result["fps"].as<int>());
         if (runOptions.fps <= 0.0f) {
             std::cerr << "--fps must be positive.\n";
@@ -109,8 +115,9 @@ int main(int argc, char* argv[]) {
         }
 
         // 视频每一帧都得有，窗口模式也不导帧，跳帧只对图片序列有意义
-        if (result.count("skip-intermediate") > 0 && result.count("images") == 0) {
-            std::cerr << "--skip-intermediate only applies to --images mode.\n";
+        if ((result.count("skip-intermediate") > 0 || result.count("force-skip-intermediate") > 0)
+            && result.count("images") == 0) {
+            std::cerr << "--skip-intermediate/--force-skip-intermediate only apply to --images mode.\n";
             return 1;
         }
 

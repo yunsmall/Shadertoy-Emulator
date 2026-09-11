@@ -205,19 +205,43 @@ void ShadertoyEmulator::runImages() {
         }
     }
 
-    // 跳帧只在 shader 没有帧间状态时才对。这里不拦人，但结果错了得让使用者知道
-    if (m_options.skipIntermediate) {
+    // 跳了哪些、谁还在每帧跑，光看导出的图看不出来，得说一声——尤其是"一个都没跳掉"
+    // 这种和预期相反的结果
+    if (m_options.forceSkipIntermediate) {
+        std::cout << "Skipping frames in between: no dependency check, only the saved frames render"
+                  << std::endl;
+    } else if (m_options.skipIntermediate) {
+        std::string keep;
+        for (auto& pass : m_core.passes()) {
+            if (m_core.mustRunEveryFrame().count(pass.get()) == 0) continue;
+            if (!keep.empty()) keep += ", ";
+            keep += pass->name;
+        }
+        std::cout << "Skipping frames in between: ";
+        if (keep.empty()) {
+            std::cout << "nothing has cross-frame state, so only the saved frames render";
+        } else {
+            std::cout << "every frame renders " << keep
+                      << " (cross-frame state); the rest only on the saved frames";
+        }
+        std::cout << std::endl;
+    }
+
+    // 强制跳帧不做依赖分析，中间帧一律不渲染，有帧间状态的必然算错——这里不拦人，
+    // 但结果错了得让使用者知道。--skip-intermediate 走的是另一条路，它只跳分析下来
+    // 无状态的通道，不需要提醒
+    if (m_options.forceSkipIntermediate) {
         for (auto& pass : m_core.passes()) {
             if (pass->useDoubleBuffer) {
-                std::cerr << "Warning: --skip-intermediate is on, but " << pass->name
+                std::cerr << "Warning: --force-skip-intermediate is on, but " << pass->name
                           << " reads its own previous frame. The skipped frames are never "
                              "rendered, so its feedback state is wrong" << std::endl;
                 break;
             }
         }
         if (m_core.hasSoundPass()) {
-            std::cerr << "Warning: --skip-intermediate is on, but the shader has a Sound pass. "
-                         "Its samples are generated per frame, so the audio will have gaps"
+            std::cerr << "Warning: --force-skip-intermediate is on, but the shader has a Sound "
+                         "pass. Its samples are generated per frame, so the audio will have gaps"
                       << std::endl;
         }
     }
@@ -232,14 +256,27 @@ void ShadertoyEmulator::runImages() {
         saved++;
     };
 
-    if (m_options.skipIntermediate) {
-        // m_frameCount 直接跳到目标帧。beginFrame() 拿它算 iFrame/iTime，所以跳过去的
-        // 帧看到的时间跟在全渲染的路径里一模一样，导出的文件名也不会错位
+    if (m_options.forceSkipIntermediate) {
+        // 不做依赖分析，只渲染要存的那几帧。m_frameCount 直接跳到目标帧：beginFrame()
+        // 拿它算 iFrame/iTime，所以留下来的帧看到的时间跟全渲染时一模一样
         for (int f = range.start; f < range.stop; f += range.step) {
             m_frameCount = f;
             renderPasses();  // 它末尾的 m_frameCount++ 下一轮会被覆盖，无所谓
             renderToScreen();
             saveFrame();
+        }
+    } else if (m_options.skipIntermediate) {
+        // 还是逐帧走，但中间帧只渲染状态链条上的通道：有状态的那条链一帧不落地跑完，
+        // 所以它的反馈值跟全渲染时一致；无状态的中间帧跳过，这才是省下来的部分
+        while (m_frameCount < range.stop) {
+            // 拿 m_frameCount 判断，不能看 m_frame.frameIndex——后者是上一轮 beginFrame()
+            // 留下的，还没轮到本帧（原路径是在渲染之后才判断，所以那边没这个坑）
+            const bool isTarget = range.contains(m_frameCount);
+            renderPasses(!isTarget);
+            if (isTarget) {
+                renderToScreen();
+                saveFrame();
+            }
         }
     } else {
         while (m_frameCount < range.stop) {
@@ -254,8 +291,9 @@ void ShadertoyEmulator::runImages() {
 
     // 每帧成本按实际渲染的帧数算，不是存盘张数：--images 0:300:2 只存 150 张，
     // 全渲染那条路 300 帧一帧不少，拿存盘张数去除会把成本算高一倍；
-    // 跳帧那条路反过来，确实只渲染了存盘的那些
-    const int rendered = m_options.skipIntermediate ? range.count() : range.stop;
+    // 只跳中间帧的那条路也还是逐帧走，一样是 range.stop；
+    // 强制跳帧那条真的只渲染了存盘的那些
+    const int rendered = m_options.forceSkipIntermediate ? range.count() : range.stop;
     m_exporter.finish(std::to_string(saved) + " frames", rendered, exportStart);
 }
 
@@ -391,13 +429,13 @@ void ShadertoyEmulator::beginFrame() {
                                    m_input.mouseZ(), m_input.mouseW());
 }
 
-void ShadertoyEmulator::renderPasses() {
+void ShadertoyEmulator::renderPasses(bool intermediate) {
     // 先定好本帧的时间，后面的 buffer pass 和 image pass 都用这一份，
     // 否则 m_frameCount 自增会让两者差一整帧
     beginFrame();
 
     m_core.updateKeyboard(m_input.keys());
-    m_core.renderBufferPasses(m_frame);
+    m_core.renderBufferPasses(m_frame, intermediate);
 
     // 检查并生成声音（此时可以读取当前帧的 Buffer 数据）
     checkAndGenerateSound();

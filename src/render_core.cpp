@@ -194,6 +194,8 @@ void RenderCore::initPasses() {
         std::cerr << "Warning: no pass named \"Image\" was initialized, so nothing will be rendered "
                      "or exported (pass names are case-sensitive)" << std::endl;
     }
+
+    computeMustRunPasses();
 }
 
 bool RenderCore::loadShader(RenderPass& pass, const PassConfig& config) {
@@ -377,11 +379,82 @@ void RenderCore::updateKeyboard(const std::array<bool, 256>& keys) {
     m_keyPressedPrev = keys;
 }
 
-void RenderCore::renderBufferPasses(const FrameState& frame) {
+void RenderCore::renderBufferPasses(const FrameState& frame, bool intermediate) {
     // 渲染所有 Buffer pass（非 Image 非 Sound）
     for (auto& pass : m_passes) {
-        if (!pass->isImage && !pass->isSound) {
-            renderPass(*pass, frame);
+        if (pass->isImage || pass->isSound) continue;
+        // 跳帧模式的中间帧只走状态链条上的通道。无状态的这一帧算出来也没人看：
+        // 下一个目标帧会把它整个重算一遍
+        if (intermediate && m_mustRunEveryFrame.find(pass.get()) == m_mustRunEveryFrame.end()) {
+            continue;
+        }
+        renderPass(*pass, frame);
+    }
+}
+
+// 跳帧模式的中间帧必须渲染哪些通道：输出传递依赖自己的（自引用、引用环）一帧不落地跑，
+// 它们读到的通道也得跟着跑——补历史时被读的一方不在同一帧渲染，读到的就是上一次留下的
+// 陈旧值。剩下的中间帧可以整个跳过，那是跳帧唯一能省下来的部分。
+//
+// 判据是"沿引用边能不能走回自己"，环也算：环里第一个渲染的读上一帧，整条环的值都是
+// 跨帧演化出来的，跳了就对不上
+void RenderCore::computeMustRunPasses() {
+    // 每个 pass 读了哪些 buffer pass
+    std::map<RenderPass*, std::vector<RenderPass*>> reads;
+    auto addReader = [&](RenderPass* reader) {
+        std::vector<RenderPass*>& deps = reads[reader];
+        for (auto& channel : reader->channels) {
+            if (!channel || channel->type != ChannelInput::Type::Buffer) continue;
+            auto it = m_passMap.find(channel->source);
+            if (it == m_passMap.end() || it->second->isImage) continue;
+            deps.push_back(it->second);
+        }
+    };
+    // Image 不用管：它只在目标帧渲染，那时所有 buffer 都是新鲜的
+    for (auto& pass : m_passes) {
+        if (!pass->isImage) addReader(pass.get());
+    }
+
+    auto reachesSelf = [&reads](RenderPass* start) {
+        std::vector<RenderPass*> stack{start};
+        std::set<RenderPass*> seen{start};
+        while (!stack.empty()) {
+            RenderPass* node = stack.back();
+            stack.pop_back();
+            auto it = reads.find(node);
+            if (it == reads.end()) continue;
+            for (RenderPass* next : it->second) {
+                if (next == start) return true;
+                if (seen.insert(next).second) stack.push_back(next);
+            }
+        }
+        return false;
+    };
+
+    m_mustRunEveryFrame.clear();
+    std::vector<RenderPass*> pending;
+    for (auto& pass : m_passes) {
+        if (pass->isImage || pass->isSound) continue;
+        if (reachesSelf(pass.get())) {
+            m_mustRunEveryFrame.insert(pass.get());
+            pending.push_back(pass.get());
+        }
+    }
+
+    // Sound 每帧都要生成采样，它读的 buffer 也得每帧是新鲜的。它自己不占 buffer 的
+    // 名额（不归 renderBufferPasses 管），只当传播的起点
+    if (m_soundPass) {
+        for (RenderPass* dep : reads[m_soundPass]) {
+            if (m_mustRunEveryFrame.insert(dep).second) pending.push_back(dep);
+        }
+    }
+
+    // 沿着"读了谁"往外传：链条上的人补历史时，被读的一方不在同一帧渲染就会读岔
+    while (!pending.empty()) {
+        RenderPass* node = pending.back();
+        pending.pop_back();
+        for (RenderPass* dep : reads[node]) {
+            if (m_mustRunEveryFrame.insert(dep).second) pending.push_back(dep);
         }
     }
 }
