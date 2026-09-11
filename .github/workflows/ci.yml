@@ -28,13 +28,13 @@ jobs:
             libx11-dev libxrandr-dev libxcursor-dev libxi-dev libxext-dev libxrender-dev \
             libgl1-mesa-dev libudev-dev libasound2-dev
 
-      - name: 缓存 vcpkg 依赖
+      # 只缓存二进制包，别缓存 vcpkg/installed：恢复缓存会把 vcpkg/ 目录建出来，
+      # 紧接着的 git clone 就会撞上「destination path already exists」
+      - name: 缓存 vcpkg 二进制包
         uses: actions/cache@v4
         with:
-          path: |
-            vcpkg/installed
-            vcpkg_cache
-          key: vcpkg-linux-${{ env.VCPKG_COMMIT }}
+          path: vcpkg_cache
+          key: vcpkg-bin-linux-${{ env.VCPKG_COMMIT }}
 
       - name: 装 vcpkg 与依赖
         run: |
@@ -64,13 +64,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 缓存 vcpkg 依赖
+      # 同 linux：只缓存二进制包，缓存 vcpkg/installed 会把 vcpkg/ 目录占住
+      - name: 缓存 vcpkg 二进制包
         uses: actions/cache@v4
         with:
-          path: |
-            vcpkg/installed
-            vcpkg_cache
-          key: vcpkg-windows-${{ env.VCPKG_COMMIT }}
+          path: vcpkg_cache
+          key: vcpkg-bin-windows-${{ env.VCPKG_COMMIT }}
 
       - name: 装 vcpkg 与依赖
         shell: pwsh
