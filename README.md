@@ -165,6 +165,9 @@ ShadertoyEmulator config.json
 | `--duration <seconds>` | Length of the exported video; required with `--video` |
 | `--fps <n>` | Export frame rate (default: 60). Image mode uses it as the `iTime` step; video mode also uses it as the output frame rate |
 | `--dump-audio <file.wav>` | Also write the Sound pass output to a WAV file |
+| `--debug-view <pass>` | Show that buffer pass instead of the Image pass, e.g. `BufferA` (works in window and image modes) |
+| `--dump-buffers <list\|all>` | **Image mode**: also export those buffer passes to `<dir>/buffers/<name>/`; comma separated, or `all` |
+| `--dump-buffer-gain <n>` | Multiplier applied to buffer values before clamping to 0..1 when dumping (default: 1) |
 | `--builtin-preprocessor` | Use built-in GLSL preprocessor |
 
 The three modes are mutually exclusive: without `--images` or `--video` you get window mode.
@@ -247,6 +250,9 @@ ShadertoyEmulator config.json --images 0:300:2 --output-dir frames/ --fps 30
 - Files are named `%05d.png` with the absolute frame index (`00000.png`, `00002.png`, …).
 - Export uses virtual time (`iTime = iFrame / --fps`) so results are reproducible.
 - The output directory is created if it does not exist.
+- `--dump-buffers BufferA,BufferC` (or `all`) additionally writes those buffer passes to
+  `<dir>/buffers/<name>/`, using the same frame indices. Buffers hold floating-point data, so
+  values are multiplied by `--dump-buffer-gain` and clamped to 0..1 when written as 8-bit PNG.
 
 ### Video
 
@@ -384,6 +390,20 @@ This project only provides an emulator to run these shaders locally. All shader 
 - **ESC** - Exit program
 - **Mouse** - Drag interaction
 - **Keyboard** - Read via keyboard channel
+
+### Debug Panel
+
+With `--gui`, the ImGui overlay has:
+
+- **Controls** — Pause / Next Frame / Reset, timing, and a pixel probe: point at the image to read
+  that pixel's RGBA, shown next to a color swatch. Components outside 0..1 are marked red.
+  Uncheck `Probe` to skip the read entirely.
+- **Passes** — click a pass to display its buffer instead of the Image pass. `Inputs: <pass>`
+  unfolds the channel bindings. `Thumbnails` previews every buffer (off by default; each one
+  costs a blit per frame).
+
+The probe reads whatever is currently on screen, so while viewing a buffer you get its raw float
+values — negatives and values above 1 included — instead of the 8-bit output.
 
 ## License
 

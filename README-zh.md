@@ -159,6 +159,9 @@ ShadertoyEmulator config.json
 | `--duration <秒>` | 视频时长，用 `--video` 时必填 |
 | `--fps <n>` | 导出帧率（默认 60）：图片模式决定 `iTime` 的步长，视频模式还决定输出帧率 |
 | `--dump-audio <file.wav>` | 额外把 Sound pass 的输出写成 WAV |
+| `--debug-view <pass>` | 显示指定 buffer pass 而不是 Image pass，如 `BufferA`（窗口和图片模式都可用） |
+| `--dump-buffers <名字列表\|all>` | **图片模式**：额外把这些 buffer 导到 `<目录>/buffers/<名字>/`，逗号分隔，或写 `all` |
+| `--dump-buffer-gain <n>` | 导出 buffer 前先乘这个数再 clamp 到 0..1（默认 1） |
 | `--builtin-preprocessor` | 使用内置 GLSL 预处理器 |
 
 三种模式互斥：不给 `--images` 或 `--video` 就是窗口模式。导出模式没有窗口、没有 ImGui、
@@ -241,6 +244,9 @@ ShadertoyEmulator config.json --images 0:300:2 --output-dir frames/ --fps 30
 - 文件名为 `%05d.png`，用绝对帧号（`00000.png`、`00002.png`…）
 - 导出时用虚拟时间（`iTime = iFrame / --fps`），保证结果可复现
 - 输出目录不存在会自动创建
+- `--dump-buffers BufferA,BufferC`（或写 `all`）额外把这些 buffer 导到
+  `<目录>/buffers/<名字>/`，帧号和主图一致。buffer 里存的是浮点，写成 8 位 PNG 前会先乘
+  `--dump-buffer-gain` 再 clamp 到 0..1
 
 ### 视频
 
@@ -377,6 +383,19 @@ bug，绝不改变原有功能**，且每一处都会写在该着色器 `config.
 - **ESC** - 退出程序
 - **鼠标** - 拖拽交互
 - **键盘** - 通过 keyboard 通道读取
+
+### 调试面板
+
+带 `--gui` 时，ImGui 面板里还有：
+
+- **Controls** — 暂停 / 单帧 / 重置、时间信息，以及像素探针：鼠标指向画面即读出该像素的
+  RGBA，旁边有色块显示颜色，超出 0..1 的分量标红。取消勾选 `Probe` 可以完全不读。
+- **Passes** — 点某个 pass 就把画面切到它的 buffer，而不是 Image pass。`Inputs: <pass>`
+  展开后是各通道的绑定。`Thumbnails` 显示每个 buffer 的小图（默认关闭；每个 buffer 每帧
+  要多一次 blit）。
+
+探针读的是画面上此刻显示的那份数据，所以看 buffer 时拿到的是原始浮点——负值和超过 1 的
+都还在，不是量化过的 8 位输出。
 
 ## 许可证
 
