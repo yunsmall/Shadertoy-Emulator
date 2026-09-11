@@ -23,7 +23,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            ninja-build xvfb libgl1-mesa-dri python3-pil ffmpeg \
+            ninja-build xvfb libgl1-mesa-dri python3-pil python3-numpy ffmpeg \
             libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
             libx11-dev libxrandr-dev libxcursor-dev libxi-dev libxext-dev libxrender-dev \
             libgl1-mesa-dev libudev-dev libasound2-dev
