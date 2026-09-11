@@ -2,6 +2,7 @@
 #include "glsl_preprocessor.hpp"
 #include <glad/glad.h>
 #include <fstream>
+#include <regex>
 #include <sstream>
 #include <iomanip>
 #include <iostream>
@@ -255,17 +256,18 @@ void ShadertoyEmulator::cacheUniformLocations(RenderPass& pass) {
     }
 }
 
+// glslangValidator 展开 #include 后会写出 #line <n> "<file>"。带文件名那种写法是
+// ARB_shading_language_include 的语法，标准 GLSL 只认 #line <n>，没实现该扩展的
+// 驱动（比如 Mesa）会直接报语法错误，所以在这里统一把文件名丢掉
+static std::string stripLineFilenames(const std::string& code) {
+    static const std::regex re(R"(#line([ \t]+[0-9]+)[ \t]+"[^"]*")");
+    return std::regex_replace(code, re, "#line$1");
+}
+
 std::string ShadertoyEmulator::wrapProcessedShader(const std::string& processedCode) {
     std::ostringstream shader;
 
     shader << "#version 330 core\n\n";
-
-    // glslangValidator 展开 #include 后会写出 #line <n> "<file>"，
-    // 带文件名这种形式属于 ARB_shading_language_include 扩展，驱动默认不认。
-    // #extension 必须排在所有非预处理内容之前，所以只能紧跟在版本号后面
-    if (processedCode.find("#line") != std::string::npos) {
-        shader << "#extension GL_ARB_shading_language_include : enable\n\n";
-    }
 
     shader << "out vec4 fragColor;\n\n";
     shader << "uniform vec3 iResolution;\n";
@@ -285,7 +287,7 @@ std::string ShadertoyEmulator::wrapProcessedShader(const std::string& processedC
     shader << "\n";
 
     // 添加预处理后的代码
-    shader << processedCode << "\n";
+    shader << stripLineFilenames(processedCode) << "\n";
 
     // 添加 main 函数
     shader << "void main() {\n";
@@ -321,11 +323,11 @@ std::string ShadertoyEmulator::wrapShader(const std::string& userCode) {
 
     if (!m_commonCode.empty()) {
         shader << "// === Common Code ===\n";
-        shader << preprocessor.process(m_commonCode, m_config.getBasePath()) << "\n";
+        shader << stripLineFilenames(preprocessor.process(m_commonCode, m_config.getBasePath())) << "\n";
     }
 
     shader << "// === Pass Code ===\n";
-    shader << preprocessor.continueProcess(userCode, m_config.getBasePath()) << "\n";
+    shader << stripLineFilenames(preprocessor.continueProcess(userCode, m_config.getBasePath())) << "\n";
 
     shader << "void main() {\n";
     shader << "    float _frame = float(iFrame);\n";
@@ -1282,8 +1284,8 @@ int ShadertoyEmulator::mapSfmlScancodeToShadertoy(sf::Keyboard::Scancode scancod
 std::string ShadertoyEmulator::wrapSoundShader(const std::string& userCode) {
     GlslPreprocessor preprocessor;
 
-    // 预处理得在拼 shader 之前做完：要先看结果里有没有带文件名的 #line，
-    // 才知道需不需要在最前面声明 ARB_shading_language_include
+    // 公共代码和 pass 代码得合在一次预处理里跑：宏状态是连续的，
+    // 分开跑的话 pass 代码看不到公共代码里定义的宏
     std::string commonCode;
     if (!m_commonCode.empty()) {
         commonCode = preprocessor.process(m_commonCode, m_config.getBasePath());
@@ -1293,13 +1295,6 @@ std::string ShadertoyEmulator::wrapSoundShader(const std::string& userCode) {
     std::ostringstream shader;
 
     shader << "#version 330 core\n\n";
-
-    // 同 wrapProcessedShader：glslangValidator 展开 #include 后写出的
-    // #line <n> "<file>" 要这个扩展才合法
-    if (commonCode.find("#line") != std::string::npos ||
-        passCode.find("#line") != std::string::npos) {
-        shader << "#extension GL_ARB_shading_language_include : enable\n\n";
-    }
 
     shader << "out vec2 fragColor;\n\n";
     shader << "uniform vec3 iResolution;\n";
@@ -1322,11 +1317,11 @@ std::string ShadertoyEmulator::wrapSoundShader(const std::string& userCode) {
 
     if (!commonCode.empty()) {
         shader << "// === Common Code ===\n";
-        shader << commonCode << "\n";
+        shader << stripLineFilenames(commonCode) << "\n";
     }
 
     shader << "// === Sound Pass Code ===\n";
-    shader << passCode << "\n";
+    shader << stripLineFilenames(passCode) << "\n";
 
     shader << "void main() {\n";
     shader << "    int samp = iSampleOffset + int(floor(gl_FragCoord.x));\n";

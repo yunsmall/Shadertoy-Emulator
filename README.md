@@ -36,30 +36,46 @@ download it, unpack it, run `ShadertoyEmulator.exe`.
 
 ### From source
 
-Dependencies are managed by [vcpkg](https://github.com/microsoft/vcpkg) in
-classic mode — there is no `vcpkg.json`, packages are installed into vcpkg
-itself, so `VCPKG_ROOT` has to point at your vcpkg checkout.
+Everything comes from [vcpkg](https://github.com/microsoft/vcpkg) in **classic
+mode** — there is no `vcpkg.json`, packages go into vcpkg's own directory.
+SFML, ImGui-SFML, glad, cxxopts and nlohmann_json are all provided by vcpkg;
+**don't go download them separately**.
 
-1. Install vcpkg and set `VCPKG_ROOT` to its directory:
+1. Install vcpkg **outside the project directory**, so it doesn't get swept into git:
 
    ```bash
-   git clone https://github.com/microsoft/vcpkg
-   ./vcpkg/bootstrap-vcpkg.sh          # Windows: .\vcpkg\bootstrap-vcpkg.bat
+   git clone https://github.com/microsoft/vcpkg ~/vcpkg     # Windows: pick a path
+   ~/vcpkg/bootstrap-vcpkg.sh
+   # Windows: .\vcpkg\bootstrap-vcpkg.bat
    ```
 
-2. Install the dependencies.
+2. Point `VCPKG_ROOT` at it — that's how the build finds vcpkg's toolchain file:
+
+   ```bash
+   # Linux: append to your shell config so it survives new terminals
+   echo 'export VCPKG_ROOT=$HOME/vcpkg' >> ~/.bashrc && source ~/.bashrc
+   ```
+
+   ```powershell
+   # Windows PowerShell: reopen the terminal afterwards
+   setx VCPKG_ROOT "E:\path\to\vcpkg"
+   ```
+
+3. Install the dependencies.
 
    **Windows** — the full FFmpeg feature set (H.264/H.265/VP9/Opus/MP3/AV1).
-   Drop the extras and keep only `ffmpeg[x264]` if all you need is video export
-   working; that alone saves tens of minutes on the first build.
+   If video export is all you need, replace it with `ffmpeg[x264]` and save tens
+   of minutes on the first build.
 
    ```bash
    vcpkg install sfml imgui-sfml cxxopts nlohmann-json glad[loader] \
                  "ffmpeg[x264,x265,vpx,opus,mp3lame,dav1d]" --triplet x64-windows
    ```
 
-   **Linux** — take FFmpeg from the distribution instead of vcpkg, so vcpkg
-   doesn't spend tens of minutes compiling it:
+   **Linux** — handing `ffmpeg[x264]` to vcpkg as well is the setup that
+   surprises people least (it just costs tens of minutes). If you'd rather skip
+   that, leave ffmpeg out and use the distribution's dev packages instead:
+   `CMakeLists.txt` falls back to pkg-config when `find_package(FFMPEG)` fails.
 
    ```bash
    sudo apt install libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
@@ -68,8 +84,8 @@ itself, so `VCPKG_ROOT` has to point at your vcpkg checkout.
    vcpkg install sfml imgui-sfml cxxopts nlohmann-json glad[loader] --triplet x64-linux
    ```
 
-3. Configure and build. The toolchain file is what makes `find_package` find
-   everything above — without it the configure step fails.
+4. Configure and build. The toolchain file is not optional — it's what feeds
+   these packages to `find_package`.
 
    ```bash
    cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
@@ -77,17 +93,29 @@ itself, so `VCPKG_ROOT` has to point at your vcpkg checkout.
    cmake --build build --parallel 6
    ```
 
-4. Run it. On Windows the vcpkg runtime DLLs have to be reachable, either by
-   adding `<VCPKG_ROOT>\installed\x64-windows\bin` to `PATH`, or by copying the
-   DLLs next to the executable:
+5. Run it. On Windows the runtime DLLs have to be reachable, pick either:
+
+   ```powershell
+   # for the current terminal only
+   $env:PATH = "$env:VCPKG_ROOT\installed\x64-windows\bin;$env:PATH"
+   .\build\ShadertoyEmulator.exe shader.glsl
+   ```
+
+   ...or copy the DLLs from `installed\x64-windows\bin` next to the executable.
 
    ```bash
-   # Windows
-   build\ShadertoyEmulator.exe shader.glsl
-
    # Linux
    ./build/ShadertoyEmulator shader.glsl
    ```
+
+### Build errors, decoded
+
+| Error | Usually means |
+|---|---|
+| `Could not find a package configuration file provided by "SFML"` | `-DCMAKE_TOOLCHAIN_FILE` is missing, or `VCPKG_ROOT` is unset / wrong |
+| `Could not find "vcpkg.cmake"` | `VCPKG_ROOT` points somewhere wrong, or vcpkg was never bootstrapped |
+| vcpkg asks for `--recurse` while installing | an older build of that package is already installed; add `--recurse` as it suggests |
+| The exe flashes and dies on Windows | runtime DLLs are missing, see step 5 |
 
 ### Tests
 

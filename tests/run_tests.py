@@ -21,6 +21,10 @@ from pathlib import Path
 
 from PIL import Image
 
+# Windows 上 Python 默认按 cp1252 编码标准输出，打印中文用例名会抛 UnicodeEncodeError，
+# 把真正要报的那个异常盖掉
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 TESTS_DIR = Path(__file__).resolve().parent
 ROOT = TESTS_DIR.parent
 

@@ -36,27 +36,43 @@ Windows 压缩包：下载、解压、运行 `ShadertoyEmulator.exe` 即可。
 
 ### 从源码构建
 
-依赖由 [vcpkg](https://github.com/microsoft/vcpkg) 以经典模式管理——仓库里没有
-`vcpkg.json`，包装在 vcpkg 自身，所以要把 `VCPKG_ROOT` 指向你的 vcpkg 目录。
+依赖全部走 [vcpkg](https://github.com/microsoft/vcpkg)，用的是**经典模式**——仓库里没有
+`vcpkg.json`，包装在 vcpkg 自己的目录下。SFML、ImGui-SFML、glad、cxxopts、nlohmann_json
+都由 vcpkg 提供，**不用另外去官网下载**。
 
-1. 安装 vcpkg 并设置 `VCPKG_ROOT`：
+1. 装 vcpkg。**放在项目目录外面**，免得被 git 卷进去：
 
    ```bash
-   git clone https://github.com/microsoft/vcpkg
-   ./vcpkg/bootstrap-vcpkg.sh          # Windows 用 .\vcpkg\bootstrap-vcpkg.bat
+   git clone https://github.com/microsoft/vcpkg ~/vcpkg     # Windows 换成合适的路径
+   ~/vcpkg/bootstrap-vcpkg.sh
+   # Windows 用 .\vcpkg\bootstrap-vcpkg.bat
    ```
 
-2. 安装依赖。
+2. 设 `VCPKG_ROOT` 环境变量指向它。构建时那个 toolchain 文件就是靠这个变量定位的：
 
-   **Windows** —— 完整的 FFmpeg feature 集合（H.264/H.265/VP9/Opus/MP3/AV1）。
-   只要视频导出能用的话，去掉多余的、留 `ffmpeg[x264]` 就行，首次构建能省下几十分钟。
+   ```bash
+   # Linux：写进 shell 配置，重开终端后一直有效
+   echo 'export VCPKG_ROOT=$HOME/vcpkg' >> ~/.bashrc && source ~/.bashrc
+   ```
+
+   ```powershell
+   # Windows PowerShell：设完要重开终端
+   setx VCPKG_ROOT "E:\path\to\vcpkg"
+   ```
+
+3. 装依赖。
+
+   **Windows** —— 完整的 FFmpeg feature 集合（H.264/H.265/VP9/Opus/MP3/AV1）。只要求视频
+   导出能用的话，把 ffmpeg 那项换成 `ffmpeg[x264]` 就行，首次构建能省几十分钟。
 
    ```bash
    vcpkg install sfml imgui-sfml cxxopts nlohmann-json glad[loader] \
                  "ffmpeg[x264,x265,vpx,opus,mp3lame,dav1d]" --triplet x64-windows
    ```
 
-   **Linux** —— FFmpeg 用发行版的包，别让 vcpkg 再从头编一遍（那要几十分钟）：
+   **Linux** —— 把 `ffmpeg[x264]` 一并交给 vcpkg 最省心（代价是多编几十分钟）。嫌慢的话也
+   可以不装 vcpkg 的 ffmpeg，改用发行版的开发库：`CMakeLists.txt` 里 `find_package(FFMPEG)`
+   找不到时会自动回退到 pkg-config。
 
    ```bash
    sudo apt install libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
@@ -65,7 +81,7 @@ Windows 压缩包：下载、解压、运行 `ShadertoyEmulator.exe` 即可。
    vcpkg install sfml imgui-sfml cxxopts nlohmann-json glad[loader] --triplet x64-linux
    ```
 
-3. 配置与构建。`find_package` 能对上号全靠那个 toolchain 文件，不传的话配置阶段就会失败。
+4. 配置与构建。`-DCMAKE_TOOLCHAIN_FILE` 不能省——vcpkg 就是靠它把这些包喂给 `find_package`。
 
    ```bash
    cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
@@ -73,16 +89,29 @@ Windows 压缩包：下载、解压、运行 `ShadertoyEmulator.exe` 即可。
    cmake --build build --parallel 6
    ```
 
-4. 运行。Windows 上要能找到 vcpkg 的运行时 DLL：把
-   `<VCPKG_ROOT>\installed\x64-windows\bin` 加进 `PATH`，或者把 DLL 拷到 exe 旁边。
+5. 运行。Windows 上还要能找到运行时 DLL，二选一：
+
+   ```powershell
+   # 当前终端临时生效
+   $env:PATH = "$env:VCPKG_ROOT\installed\x64-windows\bin;$env:PATH"
+   .\build\ShadertoyEmulator.exe shader.glsl
+   ```
+
+   或者把 `installed\x64-windows\bin` 下的 DLL 拷到 exe 旁边。
 
    ```bash
-   # Windows
-   build\ShadertoyEmulator.exe shader.glsl
-
    # Linux
    ./build/ShadertoyEmulator shader.glsl
    ```
+
+### 构建报错对照
+
+| 报错 | 多半是 |
+|---|---|
+| `Could not find a package configuration file provided by "SFML"` | 没传 `-DCMAKE_TOOLCHAIN_FILE`，或 `VCPKG_ROOT` 没设 / 指错了 |
+| `Could not find "vcpkg.cmake"` | `VCPKG_ROOT` 指错，或者 vcpkg 没 bootstrap 过 |
+| 装依赖时提示要用 `--recurse` | vcpkg 里已经装过这个包的旧版本，按提示加上 `--recurse` 重装 |
+| Windows 上双击 exe 闪退 | 缺运行时 DLL，见上面第 5 步 |
 
 ### 测试
 

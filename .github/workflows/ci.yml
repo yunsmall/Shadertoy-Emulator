@@ -90,6 +90,14 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake"
           cmake --build build --config Release --parallel
 
+      - name: 检查依赖 DLL 是否齐全
+        shell: pwsh
+        run: |
+          # 加载 DLL 时本来就优先 exe 同目录，所以这里用的就是 vcpkg applocal 拷到
+          # exe 旁边的那份。缺哪个立刻就会炸，别等到用户下载了才发现
+          & ./build/Release/ShadertoyEmulator.exe --help > $null
+          if ($LASTEXITCODE -ne 0) { throw "exe 起不来，依赖 DLL 不全" }
+
       - name: 装测试依赖
         shell: pwsh
         run: |
@@ -97,9 +105,25 @@ jobs:
           # Windows runner 不预装 ffmpeg，而视频用例要用 ffprobe 校验结果
           choco install ffmpeg -y --no-progress
 
+      - name: 装 Mesa 软件渲染器
+        shell: pwsh
+        run: |
+          # runner 没有 GPU，系统自带的 GDI Generic 只到 OpenGL 1.1，而程序要 3.3 core。
+          # Mesa 的 opengl32.dll 放在 exe 旁边就会顶替系统那份，不用再设别的环境变量
+          curl.exe -sL -o mesa.7z "https://github.com/pal1000/mesa-dist-win/releases/download/26.2.0/mesa3d-26.2.0-release-msvc.7z"
+          7z x mesa.7z -omesa -y > $null
+          Copy-Item mesa/x64/opengl32.dll, mesa/x64/libgallium_wgl.dll build/Release/
+
       - name: 跑测试
         shell: pwsh
         run: python tests/run_tests.py --exe build/Release/ShadertoyEmulator.exe
+
+      - name: 移除 Mesa
+        if: always()
+        shell: pwsh
+        run: |
+          # 留着会跟着打进包里，把用户机器上的硬件加速也顶掉
+          Remove-Item build/Release/opengl32.dll, build/Release/libgallium_wgl.dll -ErrorAction SilentlyContinue
 
       - name: 打包
         if: startsWith(github.ref, 'refs/tags/v')
@@ -107,12 +131,20 @@ jobs:
         run: |
           New-Item -ItemType Directory dist | Out-Null
           Copy-Item build/Release/ShadertoyEmulator.exe dist/
-          if (Get-ChildItem build/Release/*.dll -ErrorAction SilentlyContinue) {
-            Copy-Item build/Release/*.dll dist/
-          } else {
-            # vcpkg 的 applocal 没把依赖 DLL 放到 exe 旁边时，退回全量拷贝
-            Copy-Item vcpkg/installed/x64-windows/bin/*.dll dist/
+          # vcpkg 的 applocal 把递归依赖的 DLL 全拷到了 exe 旁边，取这一份就够。
+          # 别图省事整个拷 vcpkg 的 bin 目录：那是所有已装包的 DLL，1.8GB
+          if (-not (Get-ChildItem build/Release/*.dll -ErrorAction SilentlyContinue)) {
+            throw "applocal 没把依赖 DLL 放到 build/Release/，这样打出来的包会缺 DLL"
           }
+          Copy-Item build/Release/*.dll dist/
+          # MSVC 运行时不在 vcpkg 里，目标机器没装 VC++ Redistributable 时缺了它照样起不来
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $crtDlls = & $vswhere -latest -find "VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT\*.dll" 2>$null
+          if ($crtDlls) { Copy-Item $crtDlls dist/ }
+          else { Write-Warning "没找到 MSVC 运行时 DLL，目标机器需要自行安装 VC++ Redistributable" }
+          # 就地跑一次：缺哪个 DLL 这里就会炸，别把跑不起来的包发出去
+          & ./dist/ShadertoyEmulator.exe --help > $null
+          if ($LASTEXITCODE -ne 0) { throw "打包出来的 exe 跑不起来" }
           Copy-Item -Recurse shaders dist/shaders
           Copy-Item README.md dist/
           Compress-Archive -Path dist/* -DestinationPath "ShadertoyEmulator-${{ github.ref_name }}-win64.zip"
