@@ -267,6 +267,10 @@ std::string RenderCore::wrapProcessedShader(const std::string& processedCode) {
 
     shader << glslHeader(false);
 
+    // 让后面这段的行号从 1 数起。header 那二十几行是程序加的，报错时把它们
+    // 算进去，行号就和 shader 源文件对不上了
+    shader << "#line 1\n";
+
     // 添加预处理后的代码
     shader << stripLineFilenames(processedCode) << "\n";
 
@@ -616,6 +620,8 @@ std::string RenderCore::wrapSoundShader(const std::string& processedCode) {
     std::ostringstream shader;
 
     shader << glslHeader(true);
+    // 同 wrapProcessedShader：header 的行数不该算进 shader 源文件的行号里
+    shader << "#line 1\n";
     shader << stripLineFilenames(processedCode) << "\n";
 
     shader << "void main() {\n";

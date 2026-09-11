@@ -1,9 +1,7 @@
 #pragma once
 
 #include <string>
-#include <map>
 #include <set>
-#include <vector>
 #include <filesystem>
 
 class GlslPreprocessor {
@@ -37,43 +35,21 @@ private:
     static bool externalValidatorAvailable();
 
     // ========== 内置预处理器 ==========
-    // 宏定义
-    struct Macro {
-        std::string name;
-        std::vector<std::string> params;  // 空 = 无参数宏
-        std::string body;
-    };
-
-    std::map<std::string, Macro> m_macros;
+    // 只干一件事：#include。其余指令（#define / #if / #ifdef / #undef / #pragma…）一律
+    // 原样透传给 GLSL 编译器——它们本来就是 GLSL 语言的一部分，驱动自带的那套完整得多，
+    // 自己去实现 #if 的表达式求值只会慢一步而且更容易错
     std::set<std::filesystem::path> m_includedFiles;  // 防止循环引用
-    std::vector<bool> m_conditionStack;  // 条件编译栈（true = 当前分支激活）
 
     // 主处理。currentDir 始终是"当前文件所在目录"，#include 的相对路径基于它解析
     std::string processCode(const std::string& code,
                             const std::filesystem::path& currentDir,
                             int depth);
 
-    // 指令处理
     std::string processInclude(const std::string& args,
                                const std::filesystem::path& currentDir,
                                int depth);
-    void processDefine(const std::string& args);
-    void processUndef(const std::string& args);
-    bool processIfdef(const std::string& args, bool isIfndef = false);
-    void processElse();
-    void processEndif();
 
-    // 宏展开
-    std::string expandMacros(const std::string& text);
-
-    // 条件状态
-    bool isActive() const;  // 当前是否在激活的代码块中
-
-    // 辅助函数
     static std::string trim(const std::string& str);
-    static std::string stripComments(const std::string& code);
-    static std::vector<std::string> tokenize(const std::string& str, const std::string& delims);
-    static std::string extractString(const std::string& str, size_t start);
 
     // ========== 外部预处理器 ==========
     static std::string runExternalPreprocessor(const std::string& code,
