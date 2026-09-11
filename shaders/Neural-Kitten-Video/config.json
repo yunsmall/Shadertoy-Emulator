@@ -1,0 +1,25 @@
+{
+  "$schema": "../config.schema.json",
+  "name": "Neural Kitten Video",
+  "passes": [
+    {
+      "name": "BufferA",
+      "shader": "buffera.glsl"
+    },
+    {
+      "name": "BufferB",
+      "shader": "bufferb.glsl",
+      "channels": {
+        "0": { "type": "buffer", "source": "BufferA" },
+        "1": { "type": "buffer", "source": "BufferB" }
+      }
+    },
+    {
+      "name": "Image",
+      "shader": "image.glsl",
+      "channels": {
+        "0": { "type": "buffer", "source": "BufferB" }
+      }
+    }
+  ]
+}
