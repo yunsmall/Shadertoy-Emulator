@@ -64,7 +64,6 @@ private:
     void initPasses();
     bool loadShader(RenderPass& pass, const PassConfig& config);
     bool loadCommonCode();
-    std::string wrapShader(const std::string& userCode);
     std::string wrapProcessedShader(const std::string& processedCode);
     std::string wrapSoundShader(const std::string& userCode);
 
@@ -77,6 +76,7 @@ private:
     void resizeFramebuffers();
     void renderPasses();
     void renderPass(RenderPass& pass);
+    void bindChannels(RenderPass& pass);  // 绑定 4 个输入通道并上报 iChannelResolution
     void renderToScreen();
     void presentToWindow();  // 把输出目标贴到窗口上，离屏模式不调用
 
@@ -114,6 +114,8 @@ private:
     void captureFrame(int frameIndex);
     void readOutputPixels(std::vector<uint8_t>& pixels);  // 读输出目标，bottom-up RGBA8
     void writeAudioDump();
+    void finishExport(const std::string& label, int renderedFrames,
+                      std::chrono::steady_clock::time_point start);
 
     // 运行参数
     RunOptions m_options;
@@ -144,6 +146,9 @@ private:
     // 每帧时间，beginFrame() 算好后所有 pass 共用，避免 buffer 和 image 差一帧
     float m_frameTime = 0.0f;
     float m_frameTimeDelta = 1.0f / 60.0f;
+    // 本帧帧号的快照，别删。m_frameCount 在 renderPasses() 末尾就自增了，而
+    // renderToScreen() 和截图都发生在那之后，它们要的是"刚渲染的这一帧"的号；
+    // 直接用 m_frameCount 会让 Image pass 的 iFrame 比 Buffer pass 多 1，导出文件名也整体偏移
     int m_frameIndex = 0;
     std::array<float, 4> m_frameDate = {2024.0f, 1.0f, 1.0f, 0.0f};
 

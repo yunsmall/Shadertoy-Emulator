@@ -273,9 +273,54 @@ def case_video(exe, out):
     return True
 
 
+def case_images(exe, out):
+    """图片序列导出：帧范围/步长/文件名，以及中间帧确实被渲染过"""
+    # start 非 0、step 非 1：程序要把 0..11 每一帧都渲染一遍（buffer 状态得连续），
+    # 但只存 5/8/11。若它图省事只渲染被保存的那几帧，iFrame 就会是 0/1/2
+    export(exe, ["tests/selftest.glsl", "--width", "128", "--height", "128",
+                 "--images", "5:12:3"], out)
+
+    expected = [5, 8, 11]
+    got = sorted(p.name for p in out.glob("*.png"))
+    want = [f"{n:05d}.png" for n in expected]
+    if got != want:
+        print(f"    导出文件 {got}，期望 {want}")
+        return False
+
+    ok = True
+    for n in expected:
+        png = out / f"{n:05d}.png"
+        frame_px = pixel(png, 0.05, 0.05)[0]   # 左上角：iFrame
+        time_px = pixel(png, 0.95, 0.05)[0]    # 右上角：iTime
+        exp_frame, exp_time = n % 256, round((n / 60.0) % 1.0 * 255)
+        if abs(frame_px - exp_frame) > 1 or abs(time_px - exp_time) > 1:
+            ok = False
+            print(f"    帧 {n}: iFrame={frame_px}(期望{exp_frame}) iTime={time_px}(期望{exp_time})")
+    return ok
+
+
+def case_passres(exe, out):
+    """Buffer 独立分辨率：buffer 内看到的 iResolution 应是它自己的，而非窗口的"""
+    export(exe, ["tests/passres/config.json", "--images", "0:1:1"], out)
+    png = out / "00000.png"
+    ok = True
+    # 32x32 编码成 0.25 → 读回 64；若错拿窗口的 64x64 则是 0.5 → 读回 128
+    r, g, _ = pixel(png, 0.5, 0.25)
+    if abs(r - 64) > 1 or abs(g - 64) > 1:
+        ok = False
+        print(f"    BufferA 内 iResolution 读回 {(r, g)}，期望 (64, 64) 即 32x32")
+    r, g, _ = pixel(png, 0.5, 0.75)
+    if abs(r - 64) > 1 or abs(g - 64) > 1:
+        ok = False
+        print(f"    iChannelResolution[0] 读回 {(r, g)}，期望 (64, 64) 即 32x32")
+    return ok
+
+
 CASES = [
     ("selftest", "单 pass uniform 编码与方向", case_selftest),
     ("multipass", "多 pass 帧同步", case_multipass),
+    ("images", "图片序列导出（帧范围/步长/中间帧）", case_images),
+    ("passres", "Buffer 独立分辨率", case_passres),
     ("feedback", "自引用 Buffer 累加", case_feedback),
     ("mipmap", "自引用 Buffer 的 mipmap", case_mipmap),
     ("crossref", "双 Buffer 互相引用", case_crossref),

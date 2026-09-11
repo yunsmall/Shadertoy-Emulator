@@ -1,0 +1,20 @@
+{
+  "name": "Pass Resolution",
+  "width": 64,
+  "height": 64,
+  "passes": [
+    {
+      "name": "BufferA",
+      "shader": "buffera.glsl",
+      "width": 32,
+      "height": 32
+    },
+    {
+      "name": "Image",
+      "shader": "image.glsl",
+      "channels": {
+        "0": { "type": "buffer", "source": "BufferA", "filter": "nearest" }
+      }
+    }
+  ]
+}

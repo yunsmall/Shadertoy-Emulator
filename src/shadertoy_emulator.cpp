@@ -2,6 +2,7 @@
 #include "glsl_preprocessor.hpp"
 #include <glad/glad.h>
 #include <fstream>
+#include <filesystem>
 #include <regex>
 #include <sstream>
 #include <iomanip>
@@ -18,6 +19,20 @@ static const float QUAD_VERTICES[] = {
     -1.0f,  1.0f,
      1.0f,  1.0f
 };
+
+// 建出导出要用的目录，失败时错误信息在这里就打了，调用方只管退出
+static bool ensureDir(const std::filesystem::path& dir) {
+    if (dir.empty()) return true;
+
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    if (ec) {
+        std::cerr << "Cannot create output directory: " << dir << " (" << ec.message() << ")"
+                  << std::endl;
+        return false;
+    }
+    return true;
+}
 
 ShadertoyEmulator::ShadertoyEmulator(const ShaderConfig& config, const RunOptions& options)
     : m_options(options), m_width(config.getWidth()), m_height(config.getHeight()),
@@ -269,12 +284,14 @@ static std::string stripLineFilenames(const std::string& code) {
     return std::regex_replace(code, re, "#line$1");
 }
 
-std::string ShadertoyEmulator::wrapProcessedShader(const std::string& processedCode) {
+// 拼 shader 的公共头部：GLSL 版本、片元输出变量，以及 Shadertoy 那套标准 uniform。
+// Sound pass 的输出是 vec2（立体声），并多两个音频 uniform，其余与普通 pass 完全一致，
+// 放一处免得改动 GLSL 版本或加 uniform 时要同时改好几个地方
+static std::string glslHeader(bool isSound) {
     std::ostringstream shader;
-
     shader << "#version 330 core\n\n";
 
-    shader << "out vec4 fragColor;\n\n";
+    shader << (isSound ? "out vec2 fragColor;\n\n" : "out vec4 fragColor;\n\n");
     shader << "uniform vec3 iResolution;\n";
     shader << "uniform float iTime;\n";
     shader << "uniform float iTimeDelta;\n";
@@ -282,7 +299,12 @@ std::string ShadertoyEmulator::wrapProcessedShader(const std::string& processedC
     shader << "uniform float iFrameRate;\n";
     shader << "uniform vec4 iMouse;\n";
     shader << "uniform vec4 iDate;\n";
+    if (isSound) {
+        shader << "uniform int iSampleRate;\n";
+        shader << "uniform int iSampleOffset;\n";
+    }
 
+    shader << "\n";
     for (int i = 0; i < 4; ++i) {
         shader << "uniform sampler2D iChannel" << i << ";\n";
     }
@@ -290,50 +312,18 @@ std::string ShadertoyEmulator::wrapProcessedShader(const std::string& processedC
     shader << "uniform float iChannelTime[4];\n";
 
     shader << "\n";
+    return shader.str();
+}
+
+std::string ShadertoyEmulator::wrapProcessedShader(const std::string& processedCode) {
+    std::ostringstream shader;
+
+    shader << glslHeader(false);
 
     // 添加预处理后的代码
     shader << stripLineFilenames(processedCode) << "\n";
 
     // 添加 main 函数
-    shader << "void main() {\n";
-    shader << "    float _frame = float(iFrame);\n";
-    shader << "    mainImage(fragColor, gl_FragCoord.xy);\n";
-    shader << "}\n";
-
-    return shader.str();
-}
-
-std::string ShadertoyEmulator::wrapShader(const std::string& userCode) {
-    GlslPreprocessor preprocessor;
-
-    std::ostringstream shader;
-
-    shader << "#version 330 core\n\n";
-    shader << "out vec4 fragColor;\n\n";
-    shader << "uniform vec3 iResolution;\n";
-    shader << "uniform float iTime;\n";
-    shader << "uniform float iTimeDelta;\n";
-    shader << "uniform int iFrame;\n";
-    shader << "uniform float iFrameRate;\n";
-    shader << "uniform vec4 iMouse;\n";
-    shader << "uniform vec4 iDate;\n";
-
-    for (int i = 0; i < 4; ++i) {
-        shader << "uniform sampler2D iChannel" << i << ";\n";
-    }
-    shader << "uniform vec3 iChannelResolution[4];\n";
-    shader << "uniform float iChannelTime[4];\n";
-
-    shader << "\n";
-
-    if (!m_commonCode.empty()) {
-        shader << "// === Common Code ===\n";
-        shader << stripLineFilenames(preprocessor.process(m_commonCode, m_config.getBasePath())) << "\n";
-    }
-
-    shader << "// === Pass Code ===\n";
-    shader << stripLineFilenames(preprocessor.continueProcess(userCode, m_config.getBasePath())) << "\n";
-
     shader << "void main() {\n";
     shader << "    float _frame = float(iFrame);\n";
     shader << "    mainImage(fragColor, gl_FragCoord.xy);\n";
@@ -429,13 +419,7 @@ void ShadertoyEmulator::runImages() {
     const FrameRange& range = m_options.imageRange;
     const auto exportStart = std::chrono::steady_clock::now();
 
-    std::error_code ec;
-    std::filesystem::create_directories(m_options.imageDir, ec);
-    if (ec) {
-        std::cerr << "Cannot create output directory: " << m_options.imageDir
-                  << " (" << ec.message() << ")" << std::endl;
-        return;
-    }
+    if (!ensureDir(m_options.imageDir)) return;
 
     std::cout << "Exporting images: frames [" << range.start << ", " << range.stop
               << ") step " << range.step << " (" << range.count() << " images) -> "
@@ -452,19 +436,9 @@ void ShadertoyEmulator::runImages() {
         }
     }
 
-    writeAudioDump();
-
-    // 耗时由程序自己报：外部的 time 在 Windows 上量不到原生进程，给的数不能用
-    const double elapsed = std::chrono::duration<double>(
-        std::chrono::steady_clock::now() - exportStart).count();
-    std::cout << "Exported " << saved << " frames in " << std::fixed << std::setprecision(2)
-              << elapsed << "s";
-    // 按实际渲染的帧数算。--images 0:300:2 虽然只存 150 张，但 300 帧一帧不少地渲染了，
-    // 拿存盘张数去除会把每帧成本算高一倍
-    if (range.stop > 0) {
-        std::cout << " (" << (elapsed * 1000.0 / range.stop) << " ms/frame)";
-    }
-    std::cout << std::endl;
+    // 每帧成本按实际渲染的帧数（range.stop）算，不是存盘张数：--images 0:300:2 只存
+    // 150 张，但 300 帧一帧不少地渲染了，拿存盘张数去除会把成本算高一倍
+    finishExport(std::to_string(saved) + " frames", range.stop, exportStart);
 }
 
 void ShadertoyEmulator::runVideo() {
@@ -472,16 +446,7 @@ void ShadertoyEmulator::runVideo() {
     const int totalFrames = m_options.videoSeconds * fps;
     const auto exportStart = std::chrono::steady_clock::now();
 
-    const std::filesystem::path parent = m_options.videoPath.parent_path();
-    if (!parent.empty()) {
-        std::error_code ec;
-        std::filesystem::create_directories(parent, ec);
-        if (ec) {
-            std::cerr << "Cannot create output directory: " << parent << " (" << ec.message() << ")"
-                      << std::endl;
-            return;
-        }
-    }
+    if (!ensureDir(m_options.videoPath.parent_path())) return;
 
     // 有 Sound pass 才建音轨；没有就只写画面
     m_videoWriter = std::make_unique<VideoWriter>();
@@ -507,15 +472,21 @@ void ShadertoyEmulator::runVideo() {
     m_videoWriter->close();
     m_videoWriter.reset();
 
-    writeAudioDump();  // 只有用户另外要 WAV 时才会真写
+    finishExport("video: " + std::to_string(totalFrames) + " frames", totalFrames, exportStart);
+}
 
-    // 耗时由程序自己报：外部的 time 在 Windows 上量不到原生进程，给的数不能用
+// 导出收尾：把攒下的音频写盘（只有用户另外要 WAV 时才真写），再报一次耗时。
+// 耗时由程序自己报：外部的 time 在 Windows 上量不到原生进程，给的数不能用
+void ShadertoyEmulator::finishExport(const std::string& label, int renderedFrames,
+                                     std::chrono::steady_clock::time_point start) {
+    writeAudioDump();
+
     const double elapsed = std::chrono::duration<double>(
-        std::chrono::steady_clock::now() - exportStart).count();
-    std::cout << "Exported video: " << totalFrames << " frames in " << std::fixed
-              << std::setprecision(2) << elapsed << "s";
-    if (totalFrames > 0) {
-        std::cout << " (" << (elapsed * 1000.0 / totalFrames) << " ms/frame)";
+        std::chrono::steady_clock::now() - start).count();
+    std::cout << "Exported " << label << " in " << std::fixed << std::setprecision(2)
+              << elapsed << "s";
+    if (renderedFrames > 0) {
+        std::cout << " (" << (elapsed * 1000.0 / renderedFrames) << " ms/frame)";
     }
     std::cout << std::endl;
 }
@@ -965,6 +936,41 @@ GLuint ShadertoyEmulator::getSampler(ChannelInput::Filter filter, ChannelInput::
     return sampler;
 }
 
+// 绑定 pass 的 4 个输入通道，并把各通道实际纹理的尺寸报到 iChannelResolution。
+// 离屏的 buffer pass 和上屏的 Image pass 走的都是这一套，逻辑一模一样
+void ShadertoyEmulator::bindChannels(RenderPass& pass) {
+    std::array<sf::Glsl::Vec3, 4> channelResolutions;
+
+    for (int i = 0; i < 4; ++i) {
+        channelResolutions[i] = sf::Glsl::Vec3(0.0f, 0.0f, 0.0f);
+        if (!pass.channels[i]) continue;
+
+        GLTexture* tex = getChannelTexture(*pass.channels[i]);
+        if (!tex) continue;
+
+        tex->bind(i);
+
+        // 采样参数交给 sampler object，纹理自身状态一个字节都不动
+        glBindSampler(i, getSampler(pass.channels[i]->filter, pass.channels[i]->wrap));
+
+        // Buffer 内容每帧都变，mipmap 得重新生成；dirty 标记保证一帧内只生成一次
+        if (pass.channels[i]->filter == ChannelInput::Filter::Mipmap
+            && pass.channels[i]->type == ChannelInput::Type::Buffer
+            && tex->mipmapDirty) {
+            glGenerateMipmap(GL_TEXTURE_2D);
+            tex->mipmapDirty = false;
+        }
+
+        glUniform1i(pass.locChannels[i], i);  // location 为 -1 时 glUniform 是 no-op
+        channelResolutions[i] = sf::Glsl::Vec3(
+            static_cast<float>(tex->width),
+            static_cast<float>(tex->height), 1.0f);
+    }
+    if (pass.locChannelResolution >= 0) {
+        pass.shader.setUniformArray("iChannelResolution", channelResolutions.data(), 4);
+    }
+}
+
 void ShadertoyEmulator::renderPass(RenderPass& pass) {
     if (pass.isImage) return;
 
@@ -980,41 +986,11 @@ void ShadertoyEmulator::renderPass(RenderPass& pass) {
     // 绑定 shader
     sf::Shader::bind(&pass.shader);
 
-    // 设置 uniforms
+    // 设置 uniforms。宽高显式传：Image pass 的 width/height 不随窗口缩放更新，
+    // renderToScreen 那边必须给窗口尺寸，不能图省事改用 pass 自己的
     updateUniforms(pass, pass.width, pass.height);
 
-    // 手动绑定纹理通道
-    std::array<sf::Glsl::Vec3, 4> channelResolutions;
-
-    for (int i = 0; i < 4; ++i) {
-        if (pass.channels[i]) {
-            GLTexture* tex = getChannelTexture(*pass.channels[i]);
-            if (tex) {
-                tex->bind(i);
-
-                // 采样参数交给 sampler object，纹理自身状态一个字节都不动
-                glBindSampler(i, getSampler(pass.channels[i]->filter, pass.channels[i]->wrap));
-
-                // Buffer 内容每帧都变，mipmap 得重新生成；dirty 标记保证一帧内只生成一次
-                if (pass.channels[i]->filter == ChannelInput::Filter::Mipmap
-                    && pass.channels[i]->type == ChannelInput::Type::Buffer
-                    && tex->mipmapDirty) {
-                    glGenerateMipmap(GL_TEXTURE_2D);
-                    tex->mipmapDirty = false;
-                }
-
-                glUniform1i(pass.locChannels[i], i);  // location 为 -1 时 glUniform 是 no-op
-                channelResolutions[i] = sf::Glsl::Vec3(
-                    static_cast<float>(tex->width),
-                    static_cast<float>(tex->height), 1.0f);
-            }
-        } else {
-            channelResolutions[i] = sf::Glsl::Vec3(0.0f, 0.0f, 0.0f);
-        }
-    }
-    if (pass.locChannelResolution >= 0) {
-        pass.shader.setUniformArray("iChannelResolution", channelResolutions.data(), 4);
-    }
+    bindChannels(pass);
 
     // 渲染全屏四边形
     glBindVertexArray(m_vao);
@@ -1048,41 +1024,11 @@ void ShadertoyEmulator::renderToScreen() {
     for (auto& pass : m_passes) {
         if (pass->isImage) {
             sf::Shader::bind(&pass->shader);
+            // 这里给的是窗口尺寸而不是 pass 自己的：Image pass 不参与 resizeFramebuffers
+            // 的尺寸更新，窗口缩放后它的 width/height 是过期的
             updateUniforms(*pass, m_width, m_height);
 
-            std::array<sf::Glsl::Vec3, 4> channelResolutions;
-
-            for (int i = 0; i < 4; ++i) {
-                if (pass->channels[i]) {
-                    GLTexture* tex = getChannelTexture(*pass->channels[i]);
-                    if (tex) {
-                        tex->bind(i);
-
-                        // 采样参数交给 sampler object，纹理自身状态一个字节都不动
-                        glBindSampler(i, getSampler(pass->channels[i]->filter, pass->channels[i]->wrap));
-
-                        // Buffer 内容每帧都变，mipmap 得重新生成；dirty 标记保证一帧内只生成一次
-                        if (pass->channels[i]->filter == ChannelInput::Filter::Mipmap
-                            && pass->channels[i]->type == ChannelInput::Type::Buffer
-                            && tex->mipmapDirty) {
-                            glGenerateMipmap(GL_TEXTURE_2D);
-                            tex->mipmapDirty = false;
-                        }
-
-                        glUniform1i(pass->locChannels[i], i);  // location 为 -1 时 glUniform 是 no-op
-                        channelResolutions[i] = sf::Glsl::Vec3(
-                            static_cast<float>(tex->width),
-                            static_cast<float>(tex->height), 1.0f);
-                    } else {
-                        channelResolutions[i] = sf::Glsl::Vec3(0.0f, 0.0f, 0.0f);
-                    }
-                } else {
-                    channelResolutions[i] = sf::Glsl::Vec3(0.0f, 0.0f, 0.0f);
-                }
-            }
-            if (pass->locChannelResolution >= 0) {
-                pass->shader.setUniformArray("iChannelResolution", channelResolutions.data(), 4);
-            }
+            bindChannels(*pass);
 
             // 渲染全屏四边形
             glBindVertexArray(m_vao);
@@ -1301,26 +1247,7 @@ std::string ShadertoyEmulator::wrapSoundShader(const std::string& userCode) {
 
     std::ostringstream shader;
 
-    shader << "#version 330 core\n\n";
-
-    shader << "out vec2 fragColor;\n\n";
-    shader << "uniform vec3 iResolution;\n";
-    shader << "uniform float iTime;\n";
-    shader << "uniform float iTimeDelta;\n";
-    shader << "uniform int iFrame;\n";
-    shader << "uniform float iFrameRate;\n";
-    shader << "uniform vec4 iMouse;\n";
-    shader << "uniform vec4 iDate;\n";
-    shader << "uniform int iSampleRate;\n";
-    shader << "uniform int iSampleOffset;\n";
-
-    for (int i = 0; i < 4; ++i) {
-        shader << "uniform sampler2D iChannel" << i << ";\n";
-    }
-    shader << "uniform vec3 iChannelResolution[4];\n";
-    shader << "uniform float iChannelTime[4];\n";
-
-    shader << "\n";
+    shader << glslHeader(true);
 
     if (!commonCode.empty()) {
         shader << "// === Common Code ===\n";
