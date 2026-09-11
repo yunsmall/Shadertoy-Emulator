@@ -35,7 +35,7 @@ binaries on the [Releases page](https://github.com/yunsmall/Shadertoy-Emulator/r
 
 | Platform | File | How to run |
 |---|---|---|
-| Windows | `ShadertoyEmulator-<version>-win64.zip` | Unpack and run `ShadertoyEmulator.exe` |
+| Windows | `shadertoy-emulator-<version>-win64.zip` | Unpack and run `ShadertoyEmulator.exe` |
 | Linux | `shadertoy-emulator_<version>_amd64.deb` | `sudo apt install ./shadertoy-emulator_*.deb` |
 
 The Windows zip has the VC++ runtime bundled in, so it runs as-is. On Linux the

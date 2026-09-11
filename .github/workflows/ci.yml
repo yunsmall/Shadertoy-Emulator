@@ -168,7 +168,11 @@ jobs:
           & ./dist/ShadertoyEmulator.exe --help > $null
           if ($LASTEXITCODE -ne 0) { throw "打包出来的 exe 跑不起来" }
           Copy-Item README.md dist/
-          Compress-Archive -Path dist/* -DestinationPath "ShadertoyEmulator-${{ github.ref_name }}-win64.zip"
+          # 包名和 deb 对齐：小写连字符，版本号去掉 tag 的 v 前缀。deb 的 version
+          # 字段不许以 v 开头，两边写成一样才不会看着像两个版本
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          if ($version -notmatch '^\d') { $version = '0.0.0' }
+          Compress-Archive -Path dist/* -DestinationPath "shadertoy-emulator-$version-win64.zip"
 
       # Actions 里也能下，但下载要登录 GitHub 账号；免登录的正式下载走下面的 Release
       - name: 上传构建产物
@@ -176,7 +180,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ShadertoyEmulator-win64
-          path: ShadertoyEmulator-*-win64.zip
+          path: shadertoy-emulator-*-win64.zip
 
       # 同 linux：无条件保存，否则 Windows job 一失败，ffmpeg 就得永远重编
       - name: 保存 vcpkg 二进制缓存
@@ -205,6 +209,9 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
+          # 发出来是 draft，人工过一遍再 publish。tag 一推就对外可见的门槛太高，
+          # 包名、说明、附件这些东西翻车了也来不及改
+          draft: true
           files: |
             artifacts/ShadertoyEmulator-win64/*.zip
             artifacts/ShadertoyEmulator-linux/*.deb

@@ -35,7 +35,7 @@
 
 | 平台 | 文件 | 用法 |
 |---|---|---|
-| Windows | `ShadertoyEmulator-<版本>-win64.zip` | 解压，运行 `ShadertoyEmulator.exe` |
+| Windows | `shadertoy-emulator-<版本>-win64.zip` | 解压，运行 `ShadertoyEmulator.exe` |
 | Linux | `shadertoy-emulator_<版本>_amd64.deb` | `sudo apt install ./shadertoy-emulator_*.deb` |
 
 Windows 包里连 VC++ 运行库都放进去了，解压就能跑。Linux 装完直接执行 `ShadertoyEmulator`
