@@ -43,7 +43,11 @@ def export(exe, args, outdir, with_output_dir=True):
         cmd += ["--output-dir", str(outdir)]
     result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
     if result.returncode != 0:
-        raise RuntimeError(f"{' '.join(cmd)}\n{result.stdout}\n{result.stderr}")
+        # 带上退出码：崩溃（0xC0000005 之类）和程序主动返回非零，排查方向完全不同
+        code = result.returncode & 0xFFFFFFFF
+        raise RuntimeError(
+            f"退出码 {result.returncode} (0x{code:08X})\n{' '.join(cmd)}\n{result.stdout}\n{result.stderr}"
+        )
 
 
 def case_selftest(exe, out):

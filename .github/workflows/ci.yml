@@ -124,8 +124,8 @@ jobs:
           # 留着会跟着打进包里，把用户机器上的硬件加速也顶掉
           Remove-Item build/Release/opengl32.dll, build/Release/libgallium_wgl.dll -ErrorAction SilentlyContinue
 
+      # 每次构建都打一份：打包这步本身也得被验证，不然要等第一次发 tag 才发现它坏了
       - name: 打包
-        if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         run: |
           New-Item -ItemType Directory dist | Out-Null
@@ -147,6 +147,13 @@ jobs:
           Copy-Item -Recurse shaders dist/shaders
           Copy-Item README.md dist/
           Compress-Archive -Path dist/* -DestinationPath "ShadertoyEmulator-${{ github.ref_name }}-win64.zip"
+
+      # Actions 里也能下，但下载要登录 GitHub 账号；免登录的正式下载走下面的 Release
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ShadertoyEmulator-win64
+          path: ShadertoyEmulator-*-win64.zip
 
       - name: 发布
         if: startsWith(github.ref, 'refs/tags/v')
