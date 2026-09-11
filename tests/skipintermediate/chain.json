@@ -1,0 +1,27 @@
+{
+  "$schema": "../../shaders/config.schema.json",
+  "name": "Dependency Chain Self Test",
+  "width": 64,
+  "height": 64,
+  "passes": [
+    {
+      "name": "BufferA",
+      "shader": "chain_a.glsl"
+    },
+    {
+      "name": "BufferB",
+      "shader": "chain_b.glsl",
+      "channels": {
+        "0": { "type": "buffer", "source": "BufferB" },
+        "1": { "type": "buffer", "source": "BufferA" }
+      }
+    },
+    {
+      "name": "Image",
+      "shader": "chain_image.glsl",
+      "channels": {
+        "0": { "type": "buffer", "source": "BufferB" }
+      }
+    }
+  ]
+}
