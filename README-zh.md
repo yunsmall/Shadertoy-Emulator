@@ -155,6 +155,7 @@ ShadertoyEmulator config.json
 | `--gui` / `--no-gui` | 强制开启 / 关闭 ImGui 面板（覆盖配置） |
 | `--images <start:stop:step>` | **图片模式**：导出 PNG 序列，Python 切片语法，如 `0:300:2`（`stop` 必填且不含） |
 | `--output-dir <dir>` | PNG 保存目录，用 `--images` 时必填 |
+| `--skip-intermediate` | **图片模式**：只渲染 `--images` 选中的帧，跳过中间的。适用于帧间没有状态的 shader |
 | `--video <file.mp4>` | **视频模式**：导出 H.264 + AAC 的 mp4，需搭配 `--duration` |
 | `--duration <秒>` | 视频时长，用 `--video` 时必填 |
 | `--fps <n>` | 导出帧率（默认 60）：图片模式决定 `iTime` 的步长，视频模式还决定输出帧率 |
@@ -244,6 +245,9 @@ ShadertoyEmulator config.json --images 0:300:2 --output-dir frames/ --fps 30
 - 文件名为 `%05d.png`，用绝对帧号（`00000.png`、`00002.png`…）
 - 导出时用虚拟时间（`iTime = iFrame / --fps`），保证结果可复现
 - 输出目录不存在会自动创建
+- `--skip-intermediate` 只渲染要存盘的那几帧，不再一路渲染到 `stop`。中间帧存在的意义是
+  喂 buffer 的状态，所以这个参数适用于帧间不携带任何东西的 shader；自引用 buffer 这类
+  反馈会因此算错，程序会警告但不拦
 - `--dump-buffers BufferA,BufferC`（或写 `all`）额外把这些 buffer 导到
   `<目录>/buffers/<名字>/`，帧号和主图一致。buffer 里存的是浮点，写成 8 位 PNG 前会先乘
   `--dump-buffer-gain` 再 clamp 到 0..1

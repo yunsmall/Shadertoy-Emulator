@@ -24,6 +24,9 @@ struct RunOptions {
     // Images 模式
     FrameRange imageRange;
     std::filesystem::path imageDir;
+    // 只渲染被选中的帧，跳过中间的。前提是 shader 没有帧间状态（buffer 反馈），
+    // 有的话中间帧就是它状态的来源，跳掉结果不对——这一点由使用者自己判断
+    bool skipIntermediate = false;
 
     // Images 模式下额外把这几个 buffer 也导成 PNG，写进 <imageDir>/buffers/<名字>/。
     // 名字是 BufferA 这种 pass 名；"all" 表示所有 buffer pass

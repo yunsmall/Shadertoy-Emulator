@@ -161,6 +161,7 @@ ShadertoyEmulator config.json
 | `--gui` / `--no-gui` | Force-enable / disable the ImGui panel (overrides config) |
 | `--images <start:stop:step>` | **Image mode**: export a PNG sequence, Python slice syntax, e.g. `0:300:2` (`stop` required and excluded) |
 | `--output-dir <dir>` | Directory for the PNG sequence; required with `--images` |
+| `--skip-intermediate` | **Image mode**: render only the frames `--images` selected. For shaders with no cross-frame state, where the frames in between are pure overhead |
 | `--video <file.mp4>` | **Video mode**: export an H.264 + AAC mp4; requires `--duration` |
 | `--duration <seconds>` | Length of the exported video; required with `--video` |
 | `--fps <n>` | Export frame rate (default: 60). Image mode uses it as the `iTime` step; video mode also uses it as the output frame rate |
@@ -250,6 +251,10 @@ ShadertoyEmulator config.json --images 0:300:2 --output-dir frames/ --fps 30
 - Files are named `%05d.png` with the absolute frame index (`00000.png`, `00002.png`, …).
 - Export uses virtual time (`iTime = iFrame / --fps`) so results are reproducible.
 - The output directory is created if it does not exist.
+- `--skip-intermediate` renders only the frames that get saved, instead of every frame up to
+  `stop`. The in-between frames exist to feed buffer state, so this is for shaders that carry
+  nothing across frames — a feedback buffer (one that reads its own previous frame) will come
+  out wrong. The program warns about that but does not stop.
 - `--dump-buffers BufferA,BufferC` (or `all`) additionally writes those buffer passes to
   `<dir>/buffers/<name>/`, using the same frame indices. Buffers hold floating-point data, so
   values are multiplied by `--dump-buffer-gain` and clamped to 0..1 when written as 8-bit PNG.

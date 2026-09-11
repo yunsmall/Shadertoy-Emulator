@@ -19,6 +19,7 @@ int main(int argc, char* argv[]) {
         ("no-gui", "Disable GUI (overrides config)")
         ("images", "Export a PNG sequence: frame range in Python slice syntax, e.g. 0:100:2 (stop required, excluded). Requires --output-dir", cxxopts::value<std::string>())
         ("output-dir", "Directory for the PNG sequence (required with --images)", cxxopts::value<std::string>())
+        ("skip-intermediate", "Only render the frames selected by --images, skipping the ones in between. For shaders without cross-frame state")
         ("video", "Export a video to this path. Requires --duration", cxxopts::value<std::string>())
         ("duration", "Length of the exported video in seconds (required with --video)", cxxopts::value<int>())
         ("dump-audio", "Also write the Sound pass output to a WAV file", cxxopts::value<std::string>())
@@ -43,6 +44,7 @@ int main(int argc, char* argv[]) {
             std::cout << "  With options:   ShadertoyEmulator config.json --width 1920 --height 1080 --show-fps\n";
             std::cout << "  Export images:  ShadertoyEmulator config.json --images 0:300:2 --output-dir frames/ --fps 30\n";
             std::cout << "  Export video:   ShadertoyEmulator config.json --video out.mp4 --duration 5 --fps 60\n";
+            std::cout << "  Skip frames:    ShadertoyEmulator config.json --images 0:300:2 --output-dir frames/ --skip-intermediate\n";
             std::cout << "  Built-in prep:  ShadertoyEmulator config.json --builtin-preprocessor\n";
             return 0;
         }
@@ -68,6 +70,7 @@ int main(int argc, char* argv[]) {
 
         RunOptions runOptions;
         runOptions.showFps = result.count("show-fps") > 0;
+        runOptions.skipIntermediate = result.count("skip-intermediate") > 0;
         runOptions.fps = static_cast<float>(result["fps"].as<int>());
         if (runOptions.fps <= 0.0f) {
             std::cerr << "--fps must be positive.\n";
@@ -102,6 +105,12 @@ int main(int argc, char* argv[]) {
         // 视频模式不导调试帧：调试看的是中间结果，图片序列已经够用了
         if (result.count("dump-buffers") > 0 && result.count("images") == 0) {
             std::cerr << "--dump-buffers only applies to --images mode.\n";
+            return 1;
+        }
+
+        // 视频每一帧都得有，窗口模式也不导帧，跳帧只对图片序列有意义
+        if (result.count("skip-intermediate") > 0 && result.count("images") == 0) {
+            std::cerr << "--skip-intermediate only applies to --images mode.\n";
             return 1;
         }
 

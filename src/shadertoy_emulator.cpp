@@ -205,24 +205,58 @@ void ShadertoyEmulator::runImages() {
         }
     }
 
-    int saved = 0;
-    while (m_frameCount < range.stop) {
-        renderPasses();
-        renderToScreen();
-
-        if (range.contains(m_frame.frameIndex)) {
-            m_exporter.captureFrame(m_frame.frameIndex);
-            // buffer 也只导存盘的那几帧：--images 0:300:1 配 4 个 buffer 就是上千个文件
-            for (RenderPass* pass : dumpTargets) {
-                m_exporter.captureBuffer(*pass, m_frame.frameIndex);
+    // 跳帧只在 shader 没有帧间状态时才对。这里不拦人，但结果错了得让使用者知道
+    if (m_options.skipIntermediate) {
+        for (auto& pass : m_core.passes()) {
+            if (pass->useDoubleBuffer) {
+                std::cerr << "Warning: --skip-intermediate is on, but " << pass->name
+                          << " reads its own previous frame. The skipped frames are never "
+                             "rendered, so its feedback state is wrong" << std::endl;
+                break;
             }
-            saved++;
+        }
+        if (m_core.hasSoundPass()) {
+            std::cerr << "Warning: --skip-intermediate is on, but the shader has a Sound pass. "
+                         "Its samples are generated per frame, so the audio will have gaps"
+                      << std::endl;
         }
     }
 
-    // 每帧成本按实际渲染的帧数（range.stop）算，不是存盘张数：--images 0:300:2 只存
-    // 150 张，但 300 帧一帧不少地渲染了，拿存盘张数去除会把成本算高一倍
-    m_exporter.finish(std::to_string(saved) + " frames", range.stop, exportStart);
+    int saved = 0;
+    auto saveFrame = [&]() {
+        m_exporter.captureFrame(m_frame.frameIndex);
+        // buffer 也只导存盘的那几帧：--images 0:300:1 配 4 个 buffer 就是上千个文件
+        for (RenderPass* pass : dumpTargets) {
+            m_exporter.captureBuffer(*pass, m_frame.frameIndex);
+        }
+        saved++;
+    };
+
+    if (m_options.skipIntermediate) {
+        // m_frameCount 直接跳到目标帧。beginFrame() 拿它算 iFrame/iTime，所以跳过去的
+        // 帧看到的时间跟在全渲染的路径里一模一样，导出的文件名也不会错位
+        for (int f = range.start; f < range.stop; f += range.step) {
+            m_frameCount = f;
+            renderPasses();  // 它末尾的 m_frameCount++ 下一轮会被覆盖，无所谓
+            renderToScreen();
+            saveFrame();
+        }
+    } else {
+        while (m_frameCount < range.stop) {
+            renderPasses();
+            renderToScreen();
+
+            if (range.contains(m_frame.frameIndex)) {
+                saveFrame();
+            }
+        }
+    }
+
+    // 每帧成本按实际渲染的帧数算，不是存盘张数：--images 0:300:2 只存 150 张，
+    // 全渲染那条路 300 帧一帧不少，拿存盘张数去除会把成本算高一倍；
+    // 跳帧那条路反过来，确实只渲染了存盘的那些
+    const int rendered = m_options.skipIntermediate ? range.count() : range.stop;
+    m_exporter.finish(std::to_string(saved) + " frames", rendered, exportStart);
 }
 
 void ShadertoyEmulator::runVideo() {
