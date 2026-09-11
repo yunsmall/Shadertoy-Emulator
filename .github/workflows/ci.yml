@@ -30,8 +30,9 @@ jobs:
 
       # 只缓存二进制包，别缓存 vcpkg/installed：恢复缓存会把 vcpkg/ 目录建出来，
       # 紧接着的 git clone 就会撞上「destination path already exists」
-      - name: 缓存 vcpkg 二进制包
-        uses: actions/cache@v4
+      - name: 恢复 vcpkg 二进制缓存
+        id: vcpkg-cache
+        uses: actions/cache/restore@v4
         with:
           path: vcpkg_cache
           key: vcpkg-bin-linux-${{ env.VCPKG_COMMIT }}
@@ -59,14 +60,24 @@ jobs:
             env LIBGL_ALWAYS_SOFTWARE=1 \
             python3 tests/run_tests.py --exe build/ShadertoyEmulator
 
+      # 存/取拆开是为了让保存无条件执行。默认的缓存 action 只在 job 成功时才存，
+      # 会变成「测试挂了 → 缓存没存 → 下次又把 ffmpeg 从头编一遍」的死循环
+      - name: 保存 vcpkg 二进制缓存
+        if: always() && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: vcpkg_cache
+          key: vcpkg-bin-linux-${{ env.VCPKG_COMMIT }}
+
   windows:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
 
       # 同 linux：只缓存二进制包，缓存 vcpkg/installed 会把 vcpkg/ 目录占住
-      - name: 缓存 vcpkg 二进制包
-        uses: actions/cache@v4
+      - name: 恢复 vcpkg 二进制缓存
+        id: vcpkg-cache
+        uses: actions/cache/restore@v4
         with:
           path: vcpkg_cache
           key: vcpkg-bin-windows-${{ env.VCPKG_COMMIT }}
@@ -160,3 +171,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ShadertoyEmulator-*-win64.zip
+
+      # 同 linux：无条件保存，否则 Windows job 一失败，ffmpeg 就得永远重编
+      - name: 保存 vcpkg 二进制缓存
+        if: always() && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: vcpkg_cache
+          key: vcpkg-bin-windows-${{ env.VCPKG_COMMIT }}
