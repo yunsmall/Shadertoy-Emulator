@@ -274,14 +274,15 @@ std::string RenderCore::wrapProcessedShader(const std::string& processedCode) {
     // 添加预处理后的代码
     shader << stripLineFilenames(processedCode) << "\n";
 
-    // 添加 main 函数
+    // 添加 main 函数。照 Shadertoy 的包装来：初值只是个哨兵，写完再用 xyz 重建整个
+    // vec4、把 alpha 钉死成 1。顺序不能反——GLSL 的 out 参数是「被调用者定义」的，
+    // 调用前给的值不作数，shader 只写 .rgb 时 .a 是未定义值，只有调用之后再盖一层
+    // 才算数（Shadertoy 的 WebGL2 路径是 vec4(color.xyz, 1.0)，WebGL1 是 color.w = 1.0）
     shader << "void main() {\n";
-    // 先落一个确定值。GLSL 的 out 参数是「被调用者定义」的：mainImage 里没写到的那几个
-    // 分量算未定义，调用者给的值不作数——shader 只写 .rgb 时这个 .a 照样会丢，只有
-    // mainImage 整个被优化掉才留得住。所以别指望这一行，存 PNG 时另有一道兜底
-    shader << "    fragColor = vec4(0.0, 0.0, 0.0, 1.0);\n";
+    shader << "    vec4 color = vec4(1e20);\n";
     shader << "    float _frame = float(iFrame);\n";
-    shader << "    mainImage(fragColor, gl_FragCoord.xy);\n";
+    shader << "    mainImage(color, gl_FragCoord.xy);\n";
+    shader << "    fragColor = vec4(color.xyz, 1.0);\n";
     shader << "}\n";
 
     return shader.str();

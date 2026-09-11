@@ -59,14 +59,6 @@ void Exporter::captureFrame(int frameIndex) {
 
     readOutputPixels(m_pixelBuffer);
 
-    // framebuffer 里那个 alpha 是 shader 输出的原始值，而 shader 不写 fragColor.a 时
-    // 它压根没有定义（见 wrapProcessedShader 里的说明），实测多数落到 0。8 位 PNG 带着
-    // alpha=0 就是整张全透明，看图软件里什么都看不见；屏幕上没这个问题，因为显示不做
-    // alpha 合成。渲染层不动它——buffer 之间传的 alpha 是 shader 自己的事
-    for (size_t i = 3; i < m_pixelBuffer.size(); i += 4) {
-        m_pixelBuffer[i] = 255;
-    }
-
     // glReadPixels 是 bottom-up，sf::Image 期望 top-down
     sf::Image image(sf::Vector2u(static_cast<unsigned>(m_width), static_cast<unsigned>(m_height)),
                     m_pixelBuffer.data());
@@ -97,11 +89,6 @@ void Exporter::captureBuffer(RenderPass& pass, int frameIndex) {
 
     std::vector<uint8_t> pixels(raw.size());
     for (size_t i = 0; i < raw.size(); ++i) {
-        // alpha 同 captureFrame：shader 没写的话是个未定义值，存进 PNG 只会整张透明
-        if (i % 4 == 3) {
-            pixels[i] = 255;
-            continue;
-        }
         const float v = std::clamp(raw[i] * m_options.dumpBufferGain, 0.0f, 1.0f);
         pixels[i] = static_cast<uint8_t>(v * 255.0f + 0.5f);
     }
