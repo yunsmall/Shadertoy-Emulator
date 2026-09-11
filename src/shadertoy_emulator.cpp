@@ -1,56 +1,15 @@
 #include "shadertoy_emulator.hpp"
-#include "glsl_preprocessor.hpp"
+#include "debug_overlay.hpp"
+#include "audio_format.hpp"
 #include <glad/glad.h>
-#include <fstream>
+#include <imgui-SFML.h>
 #include <filesystem>
-#include <regex>
-#include <sstream>
 #include <iomanip>
 #include <iostream>
 #include <ctime>
 #include <cmath>
 #include <stdexcept>
 #include <algorithm>
-#include <cfloat>
-
-// 全屏四边形顶点数据
-static const float QUAD_VERTICES[] = {
-    // x, y
-    -1.0f, -1.0f,
-     1.0f, -1.0f,
-    -1.0f,  1.0f,
-     1.0f,  1.0f
-};
-
-// 下面三个只给 ImGui 的通道列表用
-static const char* filterName(ChannelInput::Filter filter) {
-    switch (filter) {
-        case ChannelInput::Filter::Linear:  return "linear";
-        case ChannelInput::Filter::Nearest: return "nearest";
-        case ChannelInput::Filter::Mipmap:  return "mipmap";
-    }
-    return "?";
-}
-
-static const char* wrapName(ChannelInput::Wrap wrap) {
-    switch (wrap) {
-        case ChannelInput::Wrap::Clamp:  return "clamp";
-        case ChannelInput::Wrap::Repeat: return "repeat";
-        case ChannelInput::Wrap::Mirror: return "mirror";
-    }
-    return "?";
-}
-
-// 通道接的是什么。纹理只留文件名——调试面板就那么宽，完整路径会把窗口撑开
-static std::string channelSourceName(const ChannelInput& channel) {
-    switch (channel.type) {
-        case ChannelInput::Type::Buffer:   return channel.source;
-        case ChannelInput::Type::Keyboard: return "keyboard";
-        case ChannelInput::Type::Texture:
-            return std::filesystem::path(channel.source).filename().string();
-    }
-    return "?";
-}
 
 // 建出导出要用的目录，失败时错误信息在这里就打了，调用方只管退出
 static bool ensureDir(const std::filesystem::path& dir) {
@@ -68,8 +27,9 @@ static bool ensureDir(const std::filesystem::path& dir) {
 
 ShadertoyEmulator::ShadertoyEmulator(const ShaderConfig& config, const RunOptions& options)
     : m_options(options), m_width(config.getWidth()), m_height(config.getHeight()),
+      m_config(config), m_core(config, options), m_exporter(options),
       m_enableGui(options.enableGui), m_debugViewPass(options.debugViewPass),
-      m_config(config), m_frameCount(0) {
+      m_frameCount(0) {
 
     // 离屏模式没有窗口，ImGui 没有可依附的目标
     if (m_options.isOffscreen()) {
@@ -101,269 +61,34 @@ ShadertoyEmulator::ShadertoyEmulator(const ShaderConfig& config, const RunOption
               << (renderer ? renderer : "?") << ", " << (vendor ? vendor : "?") << ")"
               << std::endl;
 
-    // 初始化 OpenGL 顶点数据
-    initQuad();
+    // 输出目标、键盘纹理、common 代码和所有 pass 都由渲染核心自己建
+    m_core.init(m_width, m_height);
+    m_exporter.setOutputTarget(m_core.outputTarget(), m_width, m_height);
 
-    // 所有 pass 的结果都先画进这个输出目标，之后要么截图、要么贴到窗口。
-    // 这样截图不依赖窗口的 back buffer（窗口最小化时它是 0×0）。
-    m_outputTarget = std::make_unique<GLFramebuffer>();
-    if (!m_outputTarget->create(m_width, m_height, GL_RGBA8)) {
-        throw std::runtime_error("Failed to create output render target");
+    // 音频流只为播放而建，导出模式只要数据。预生成 6 个缓冲区（3秒）。
+    // 这里不 play()：音频的起步时刻要跟画面时间基准对齐，见 runWindow
+    if (m_core.hasSoundPass() && !m_options.isOffscreen()) {
+        m_soundStream = std::make_unique<SoundShaderStream>();
+        m_soundStream->init(SOUND_SAMPLE_RATE);
+        for (int i = 0; i < 6; ++i) {
+            generateSoundBatch();
+        }
     }
-
-    // 初始化键盘纹理
-    initKeyboardTexture();
-
-    // 加载 Common 代码
-    loadCommonCode();
-
-    // 初始化所有渲染通道
-    initPasses();
 
     // 初始化时间
     m_startTime = std::chrono::high_resolution_clock::now();
     m_lastFrameTime = m_startTime;
 
-    // 初始化 ImGui
+    // 调试面板。初始化失败就当没开 GUI，否则后面每帧的 Update/Render 都会崩
     if (m_enableGui) {
-        initImGui();
-    }
-}
-
-void ShadertoyEmulator::initQuad() {
-    glGenVertexArrays(1, &m_vao);
-    glGenBuffers(1, &m_vbo);
-
-    glBindVertexArray(m_vao);
-    glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(QUAD_VERTICES), QUAD_VERTICES, GL_STATIC_DRAW);
-
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
-
-    glBindVertexArray(0);
-}
-
-bool ShadertoyEmulator::loadCommonCode() {
-    const std::string& commonPath = m_config.getCommonPath();
-    if (commonPath.empty()) {
-        m_commonCode = "";
-        return true;
-    }
-
-    std::filesystem::path fullPath = m_config.getBasePath() / commonPath;
-    std::ifstream file(fullPath);
-    if (!file.is_open()) {
-        std::cerr << "Cannot open common file: " << fullPath << std::endl;
-        return false;
-    }
-
-    std::stringstream buffer;
-    buffer << file.rdbuf();
-    m_commonCode = buffer.str();
-    std::cout << "Loaded common code: " << fullPath << std::endl;
-    return true;
-}
-
-void ShadertoyEmulator::initPasses() {
-    for (const auto& passConfig : m_config.getPasses()) {
-        auto pass = std::make_unique<RenderPass>();
-        pass->name = passConfig.name;
-        pass->channels = passConfig.channels;
-        pass->useWindowResolution = (passConfig.width == 0 || passConfig.height == 0);
-        pass->width = passConfig.width > 0 ? passConfig.width : m_width;
-        pass->height = passConfig.height > 0 ? passConfig.height : m_height;
-        pass->isImage = passConfig.isImage();
-        pass->isSound = passConfig.isSound();
-
-        // 检查是否需要双缓冲（自引用）
-        for (const auto& channel : pass->channels) {
-            if (channel && channel->type == ChannelInput::Type::Buffer && channel->source == pass->name) {
-                pass->useDoubleBuffer = true;
-                break;
-            }
-        }
-
-        // Sound 通道特殊处理
-        if (pass->isSound) {
-            // 图片导出没地方放音频，除非用户另外要 WAV；视频模式的音轨就靠它
-            if (m_options.mode == RunMode::Images && m_options.audioDumpPath.empty()) {
-                continue;
-            }
-            m_soundPass = pass.get();  // 先保存指针，initSoundPass 里会用到
-            initSoundPass(*pass);
-            m_passMap[pass->name] = pass.get();
-            m_passes.push_back(std::move(pass));
-            continue;
-        }
-
-        // 只有 Buffer 通道需要 FBO
-        if (!pass->isImage) {
-            pass->framebuffer = std::make_unique<GLFramebuffer>();
-            if (!pass->framebuffer->create(pass->width, pass->height)) {
-                std::cerr << "Failed to create FBO for " << pass->name << std::endl;
-                continue;
-            }
-
-            if (pass->useDoubleBuffer) {
-                pass->framebufferAlt = std::make_unique<GLFramebuffer>();
-                if (!pass->framebufferAlt->create(pass->width, pass->height)) {
-                    std::cerr << "Failed to create alternate FBO for " << pass->name << std::endl;
-                    continue;
-                }
-            }
-        }
-
-        // 加载 shader
-        if (!loadShader(*pass, passConfig)) {
-            continue;
-        }
-
-        std::cout << "Initialized pass: " << pass->name
-                  << " (" << pass->width << "x" << pass->height << ")"
-                  << (pass->useDoubleBuffer ? " [double buffer]" : "")
-                  << (pass->isImage ? " [image]" : "") << std::endl;
-
-        m_passMap[pass->name] = pass.get();
-        m_passes.push_back(std::move(pass));
-    }
-
-    // 没有 Image 通道就什么都不显示，导出也是一片黑。而名字拼错（比如写成小写 image）
-    // 会被当成 Buffer 悄悄收下，这里点一句，省得对着黑屏排查
-    bool hasImage = false;
-    for (const auto& pass : m_passes) {
-        if (pass->isImage) {
-            hasImage = true;
-            break;
+        m_overlay = std::make_unique<DebugOverlay>(*this);
+        if (!m_overlay->init(m_window)) {
+            m_enableGui = false;
         }
     }
-    if (!hasImage) {
-        std::cerr << "Warning: no pass named \"Image\" was initialized, so nothing will be rendered "
-                     "or exported (pass names are case-sensitive)" << std::endl;
-    }
 }
 
-bool ShadertoyEmulator::loadShader(RenderPass& pass, const PassConfig& config) {
-    std::filesystem::path fullPath = m_config.getBasePath() / config.shaderPath;
-
-    // 读取 shader 文件
-    std::ifstream file(fullPath);
-    if (!file.is_open()) {
-        std::cerr << "Cannot open shader file: " << fullPath << std::endl;
-        return false;
-    }
-    std::stringstream buffer;
-    buffer << file.rdbuf();
-    std::string shaderCode = buffer.str();
-
-    // 合并 common 代码和 shader 代码
-    std::string combinedCode;
-    if (!m_commonCode.empty()) {
-        combinedCode = m_commonCode + "\n\n" + shaderCode;
-    } else {
-        combinedCode = shaderCode;
-    }
-
-    GlslPreprocessor preprocessor;
-
-    // 统一预处理合并后的代码
-    std::string processedCode = preprocessor.process(combinedCode, m_config.getBasePath());
-    if (processedCode.empty()) {
-        std::cerr << "Shader preprocessing failed for " << fullPath << std::endl;
-        return false;
-    }
-
-    // 包装预处理后的代码
-    std::string fullShader = wrapProcessedShader(processedCode);
-
-    if (!pass.shader.loadFromMemory(fullShader, sf::Shader::Type::Fragment)) {
-        std::cerr << "Shader compilation failed for " << pass.name << std::endl;
-        return false;
-    }
-
-    cacheUniformLocations(pass);
-
-    std::cout << "Loaded shader: " << fullPath << std::endl;
-    return true;
-}
-
-void ShadertoyEmulator::cacheUniformLocations(RenderPass& pass) {
-    const GLuint program = pass.shader.getNativeHandle();
-    auto loc = [program](const std::string& name) {
-        return glGetUniformLocation(program, name.c_str());
-    };
-
-    pass.locIResolution = loc("iResolution");
-    pass.locITime = loc("iTime");
-    pass.locITimeDelta = loc("iTimeDelta");
-    pass.locIFrame = loc("iFrame");
-    pass.locIFrameRate = loc("iFrameRate");
-    pass.locIMouse = loc("iMouse");
-    pass.locIDate = loc("iDate");
-    pass.locChannelResolution = loc("iChannelResolution");
-    pass.locChannelTime = loc("iChannelTime");
-    pass.locISampleRate = loc("iSampleRate");
-    pass.locISampleOffset = loc("iSampleOffset");
-    for (int i = 0; i < 4; ++i) {
-        pass.locChannels[i] = loc("iChannel" + std::to_string(i));
-    }
-}
-
-// glslangValidator 展开 #include 后会写出 #line <n> "<file>"。带文件名那种写法是
-// ARB_shading_language_include 的语法，标准 GLSL 只认 #line <n>，没实现该扩展的
-// 驱动（比如 Mesa）会直接报语法错误，所以在这里统一把文件名丢掉
-static std::string stripLineFilenames(const std::string& code) {
-    static const std::regex re(R"(#line([ \t]+[0-9]+)[ \t]+"[^"]*")");
-    return std::regex_replace(code, re, "#line$1");
-}
-
-// 拼 shader 的公共头部：GLSL 版本、片元输出变量，以及 Shadertoy 那套标准 uniform。
-// Sound pass 的输出是 vec2（立体声），并多两个音频 uniform，其余与普通 pass 完全一致，
-// 放一处免得改动 GLSL 版本或加 uniform 时要同时改好几个地方
-static std::string glslHeader(bool isSound) {
-    std::ostringstream shader;
-    shader << "#version 330 core\n\n";
-
-    shader << (isSound ? "out vec2 fragColor;\n\n" : "out vec4 fragColor;\n\n");
-    shader << "uniform vec3 iResolution;\n";
-    shader << "uniform float iTime;\n";
-    shader << "uniform float iTimeDelta;\n";
-    shader << "uniform int iFrame;\n";
-    shader << "uniform float iFrameRate;\n";
-    shader << "uniform vec4 iMouse;\n";
-    shader << "uniform vec4 iDate;\n";
-    if (isSound) {
-        shader << "uniform int iSampleRate;\n";
-        shader << "uniform int iSampleOffset;\n";
-    }
-
-    shader << "\n";
-    for (int i = 0; i < 4; ++i) {
-        shader << "uniform sampler2D iChannel" << i << ";\n";
-    }
-    shader << "uniform vec3 iChannelResolution[4];\n";
-    shader << "uniform float iChannelTime[4];\n";
-
-    shader << "\n";
-    return shader.str();
-}
-
-std::string ShadertoyEmulator::wrapProcessedShader(const std::string& processedCode) {
-    std::ostringstream shader;
-
-    shader << glslHeader(false);
-
-    // 添加预处理后的代码
-    shader << stripLineFilenames(processedCode) << "\n";
-
-    // 添加 main 函数
-    shader << "void main() {\n";
-    shader << "    float _frame = float(iFrame);\n";
-    shader << "    mainImage(fragColor, gl_FragCoord.xy);\n";
-    shader << "}\n";
-
-    return shader.str();
-}
+ShadertoyEmulator::~ShadertoyEmulator() = default;
 
 void ShadertoyEmulator::run() {
     switch (m_options.mode) {
@@ -417,7 +142,7 @@ void ShadertoyEmulator::runWindow() {
 
         // iMouse.w 只表示"本帧刚点击"，所有 pass 都渲染完再清
         if (shouldRender) {
-            m_mouseJustClicked = false;
+            m_input.clearJustClicked();
         }
 
         // ImGui 更新和渲染
@@ -426,7 +151,7 @@ void ShadertoyEmulator::runWindow() {
             m_window.pushGLStates();
 
             ImGui::SFML::Update(m_window, imguiDeltaClock.restart());
-            renderImGui();
+            m_overlay->render();
             ImGui::SFML::Render(m_window);
 
             // 恢复 OpenGL 状态
@@ -442,10 +167,10 @@ void ShadertoyEmulator::runWindow() {
     }
 
     if (m_enableGui) {
-        shutdownImGui();
+        m_overlay->shutdown();
     }
 
-    writeAudioDump();
+    m_exporter.writeAudioDump();
 }
 
 void ShadertoyEmulator::runImages() {
@@ -464,7 +189,7 @@ void ShadertoyEmulator::runImages() {
     for (const std::string& name : m_options.dumpBuffers) {
         if (name == "all") { dumpAll = true; continue; }
 
-        RenderPass* pass = findPass(name);
+        RenderPass* pass = m_core.findPass(name);
         // 名字写错就说一声。跳过而不报错是为了让一次列一串名字时还能导其余的，
         // 但完全不吭声会让人以为导出了
         if (!pass || pass->isImage || pass->isSound) {
@@ -475,7 +200,7 @@ void ShadertoyEmulator::runImages() {
         dumpTargets.push_back(pass);
     }
     if (dumpAll) {
-        for (auto& pass : m_passes) {
+        for (auto& pass : m_core.passes()) {
             if (!pass->isImage && !pass->isSound) dumpTargets.push_back(pass.get());
         }
     }
@@ -485,11 +210,11 @@ void ShadertoyEmulator::runImages() {
         renderPasses();
         renderToScreen();
 
-        if (range.contains(m_frameIndex)) {
-            captureFrame(m_frameIndex);
+        if (range.contains(m_frame.frameIndex)) {
+            m_exporter.captureFrame(m_frame.frameIndex);
             // buffer 也只导存盘的那几帧：--images 0:300:1 配 4 个 buffer 就是上千个文件
             for (RenderPass* pass : dumpTargets) {
-                captureBuffer(*pass, m_frameIndex);
+                m_exporter.captureBuffer(*pass, m_frame.frameIndex);
             }
             saved++;
         }
@@ -497,7 +222,7 @@ void ShadertoyEmulator::runImages() {
 
     // 每帧成本按实际渲染的帧数（range.stop）算，不是存盘张数：--images 0:300:2 只存
     // 150 张，但 300 帧一帧不少地渲染了，拿存盘张数去除会把成本算高一倍
-    finishExport(std::to_string(saved) + " frames", range.stop, exportStart);
+    m_exporter.finish(std::to_string(saved) + " frames", range.stop, exportStart);
 }
 
 void ShadertoyEmulator::runVideo() {
@@ -508,10 +233,7 @@ void ShadertoyEmulator::runVideo() {
     if (!ensureDir(m_options.videoPath.parent_path())) return;
 
     // 有 Sound pass 才建音轨；没有就只写画面
-    m_videoWriter = std::make_unique<VideoWriter>();
-    if (!m_videoWriter->open(m_options.videoPath, m_width, m_height, fps, m_soundPass != nullptr)) {
-        std::cerr << "Failed to open video output: " << m_options.videoPath << std::endl;
-        m_videoWriter.reset();
+    if (!m_exporter.beginVideo(m_core.hasSoundPass())) {
         return;
     }
 
@@ -519,149 +241,17 @@ void ShadertoyEmulator::runVideo() {
               << "s @ " << fps << "fps) -> "
               << std::filesystem::absolute(m_options.videoPath) << std::endl;
 
-    std::vector<uint8_t> pixels;
     while (m_frameCount < totalFrames) {
         renderPasses();
         renderToScreen();
 
-        readOutputPixels(pixels);
-        m_videoWriter->writeFrame(pixels.data());
+        m_exporter.writeVideoFrame();
     }
 
-    m_videoWriter->close();
-    m_videoWriter.reset();
+    m_exporter.endVideo();
 
-    finishExport("video: " + std::to_string(totalFrames) + " frames", totalFrames, exportStart);
-}
-
-// 导出收尾：把攒下的音频写盘（只有用户另外要 WAV 时才真写），再报一次耗时。
-// 耗时由程序自己报：外部的 time 在 Windows 上量不到原生进程，给的数不能用
-void ShadertoyEmulator::finishExport(const std::string& label, int renderedFrames,
-                                     std::chrono::steady_clock::time_point start) {
-    writeAudioDump();
-
-    const double elapsed = std::chrono::duration<double>(
-        std::chrono::steady_clock::now() - start).count();
-    std::cout << "Exported " << label << " in " << std::fixed << std::setprecision(2)
-              << elapsed << "s";
-    if (renderedFrames > 0) {
-        std::cout << " (" << (elapsed * 1000.0 / renderedFrames) << " ms/frame)";
-    }
-    std::cout << std::endl;
-}
-
-void ShadertoyEmulator::readOutputPixels(std::vector<uint8_t>& pixels) {
-    pixels.resize(static_cast<size_t>(m_width) * static_cast<size_t>(m_height) * 4);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, m_outputTarget->fbo);
-    glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    glReadPixels(0, 0, m_width, m_height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-}
-
-void ShadertoyEmulator::captureFrame(int frameIndex) {
-    if (!m_outputTarget || m_outputTarget->fbo == 0 || m_width <= 0 || m_height <= 0) return;
-
-    std::vector<uint8_t> pixels;
-    readOutputPixels(pixels);
-
-    // glReadPixels 是 bottom-up，sf::Image 期望 top-down
-    sf::Image image(sf::Vector2u(static_cast<unsigned>(m_width), static_cast<unsigned>(m_height)),
-                    pixels.data());
-    image.flipVertically();
-
-    std::ostringstream name;
-    name << std::setfill('0') << std::setw(5) << frameIndex << ".png";
-
-    std::filesystem::path outPath = m_options.imageDir / name.str();
-    if (!image.saveToFile(outPath)) {
-        std::cerr << "Failed to save " << outPath << std::endl;
-    }
-}
-
-// 把一个 buffer 的内容写成 PNG。buffer 里存的是浮点，直接当颜色存会把负值和超过 1 的
-// 部分全削掉，所以先乘一个增益再 clamp——想看清暗部的中间值时把增益调大
-void ShadertoyEmulator::captureBuffer(RenderPass& pass, int frameIndex) {
-    GLFramebuffer* target = pass.getReadTarget();
-    const int w = target->colorTex.width;
-    const int h = target->colorTex.height;
-    if (w <= 0 || h <= 0) return;
-
-    std::vector<float> raw(static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, target->fbo);
-    glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    glReadPixels(0, 0, w, h, GL_RGBA, GL_FLOAT, raw.data());
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-    std::vector<uint8_t> pixels(raw.size());
-    for (size_t i = 0; i < raw.size(); ++i) {
-        const float v = std::clamp(raw[i] * m_options.dumpBufferGain, 0.0f, 1.0f);
-        pixels[i] = static_cast<uint8_t>(v * 255.0f + 0.5f);
-    }
-
-    // glReadPixels 是 bottom-up，sf::Image 期望 top-down
-    sf::Image image(sf::Vector2u(static_cast<unsigned>(w), static_cast<unsigned>(h)), pixels.data());
-    image.flipVertically();
-
-    std::ostringstream name;
-    name << std::setfill('0') << std::setw(5) << frameIndex << ".png";
-
-    // 放子目录：和主图平级的话，按 *.png 数张数的脚本会多数出一堆
-    const std::filesystem::path outPath =
-        m_options.imageDir / "buffers" / pass.name / name.str();
-    std::error_code ec;
-    std::filesystem::create_directories(outPath.parent_path(), ec);
-    if (!image.saveToFile(outPath)) {
-        std::cerr << "Failed to save " << outPath << std::endl;
-    }
-}
-
-void ShadertoyEmulator::writeAudioDump() {
-    if (m_options.audioDumpPath.empty()) return;
-
-    if (m_audioDumpSamples.empty()) {
-        std::cerr << "No audio to dump (config has no Sound pass?)" << std::endl;
-        return;
-    }
-
-    std::ofstream out(m_options.audioDumpPath, std::ios::binary);
-    if (!out) {
-        std::cerr << "Cannot open audio dump file: " << m_options.audioDumpPath << std::endl;
-        return;
-    }
-
-    const uint32_t dataSize = static_cast<uint32_t>(m_audioDumpSamples.size() * sizeof(int16_t));
-    const uint32_t sampleRate = SOUND_SAMPLE_RATE;
-    const uint16_t channels = 2;
-    const uint16_t bitsPerSample = 16;
-    const uint32_t byteRate = sampleRate * channels * bitsPerSample / 8;
-    const uint16_t blockAlign = channels * bitsPerSample / 8;
-
-    auto write = [&out](const void* data, std::streamsize size) {
-        out.write(static_cast<const char*>(data), size);
-    };
-
-    uint32_t chunkSize = 36 + dataSize;
-    uint32_t fmtSize = 16;
-    uint16_t audioFormat = 1;  // PCM
-
-    write("RIFF", 4);
-    write(&chunkSize, 4);
-    write("WAVE", 4);
-    write("fmt ", 4);
-    write(&fmtSize, 4);
-    write(&audioFormat, 2);
-    write(&channels, 2);
-    write(&sampleRate, 4);
-    write(&byteRate, 4);
-    write(&blockAlign, 2);
-    write(&bitsPerSample, 2);
-    write("data", 4);
-    write(&dataSize, 4);
-    write(m_audioDumpSamples.data(), static_cast<std::streamsize>(dataSize));
-
-    const size_t frames = m_audioDumpSamples.size() / 2;
-    std::cout << "Wrote audio dump: " << m_options.audioDumpPath << " (" << frames << " frames, "
-              << (static_cast<double>(frames) / SOUND_SAMPLE_RATE) << "s)" << std::endl;
+    m_exporter.finish("video: " + std::to_string(totalFrames) + " frames",
+                      totalFrames, exportStart);
 }
 
 void ShadertoyEmulator::handleEvents() {
@@ -675,7 +265,7 @@ void ShadertoyEmulator::handleEvents() {
 
                 // 只让渡鼠标/键盘事件。Closed、Resized 这类窗口生命周期事件被吞会导致
                 // 鼠标停在面板上时点 X 关不掉窗口、ESC 也退不出去。
-                // 鼠标释放同样放行，否则拖拽中划过面板再松开会让 m_mouseDown 卡在按下状态。
+                // 鼠标释放同样放行，否则拖拽中划过面板再松开会让按下状态卡住。
                 const ImGuiIO& io = ImGui::GetIO();
                 bool imGuiWants = false;
                 if (event->is<sf::Event::KeyPressed>() || event->is<sf::Event::KeyReleased>()) {
@@ -692,28 +282,18 @@ void ShadertoyEmulator::handleEvents() {
                 m_window.close();
             }
             else if (const auto* mouseMoved = event->getIf<sf::Event::MouseMoved>()) {
-                // 更新按下时的位置（如果正在按下）
-                if (m_mouseDown) {
-                    m_mouseDownX = static_cast<float>(mouseMoved->position.x);
-                    m_mouseDownY = static_cast<float>(m_height - mouseMoved->position.y);
-                    // 拖拽时才算有意义的事件
+                // 拖拽时才算有意义的事件
+                if (m_input.onMouseMoved(mouseMoved->position.x, mouseMoved->position.y, m_height)) {
                     hadEvent = true;
                 }
             }
             else if (const auto* mousePressed = event->getIf<sf::Event::MouseButtonPressed>()) {
                 hadEvent = true;
-                m_mouseDown = true;
-                m_mouseJustClicked = true;
-                float x = static_cast<float>(mousePressed->position.x);
-                float y = static_cast<float>(m_height - mousePressed->position.y);
-                m_mouseDownX = x;
-                m_mouseDownY = y;
-                m_mouseClickX = x;
-                m_mouseClickY = y;
+                m_input.onMousePressed(mousePressed->position.x, mousePressed->position.y, m_height);
             }
             else if (event->is<sf::Event::MouseButtonReleased>()) {
                 hadEvent = true;
-                m_mouseDown = false;
+                m_input.onMouseReleased();
             }
             else if (const auto* resized = event->getIf<sf::Event::Resized>()) {
                 hadEvent = true;
@@ -722,30 +302,19 @@ void ShadertoyEmulator::handleEvents() {
                 m_window.setView(sf::View(sf::FloatRect({0.0f, 0.0f},
                                           sf::Vector2f(static_cast<float>(m_width),
                                                       static_cast<float>(m_height)))));
-                resizeFramebuffers();
+                m_core.resize(m_width, m_height);
+                m_exporter.setOutputTarget(m_core.outputTarget(), m_width, m_height);
             }
             else if (const auto* keyPressed = event->getIf<sf::Event::KeyPressed>()) {
                 hadEvent = true;
-                int keyCode = mapSfmlKeyToShadertoy(keyPressed->code);
-                if (keyCode < 0) {
-                    keyCode = mapSfmlScancodeToShadertoy(keyPressed->scancode);
-                }
-                if (keyCode >= 0 && keyCode < 256) {
-                    m_keyPressed[keyCode] = true;
-                }
+                m_input.setKey(keyPressed->code, keyPressed->scancode, true);
                 if (keyPressed->code == sf::Keyboard::Key::Escape) {
                     m_window.close();
                 }
             }
             else if (const auto* keyReleased = event->getIf<sf::Event::KeyReleased>()) {
                 hadEvent = true;
-                int keyCode = mapSfmlKeyToShadertoy(keyReleased->code);
-                if (keyCode < 0) {
-                    keyCode = mapSfmlScancodeToShadertoy(keyReleased->scancode);
-                }
-                if (keyCode >= 0 && keyCode < 256) {
-                    m_keyPressed[keyCode] = false;
-                }
+                m_input.setKey(keyReleased->code, keyReleased->scancode, false);
             }
         }
     }
@@ -759,101 +328,33 @@ void ShadertoyEmulator::handleEvents() {
 void ShadertoyEmulator::beginFrame() {
     if (m_options.isOffscreen()) {
         // 离屏没有 vsync 限帧，用虚拟时间，否则 iTime 几乎不涨、动画会静止
-        m_frameTime = static_cast<float>(m_frameCount) / m_options.fps;
-        m_frameTimeDelta = 1.0f / m_options.fps;
+        m_frame.time = static_cast<float>(m_frameCount) / m_options.fps;
+        m_frame.timeDelta = 1.0f / m_options.fps;
         // iDate 也用固定纪元 + 虚拟秒，否则同一命令每次导出的结果都不一样
-        m_frameDate = {2024.0f, 1.0f, 1.0f, std::fmod(m_frameTime, 86400.0f)};
+        m_frame.date = {2024.0f, 1.0f, 1.0f, std::fmod(m_frame.time, 86400.0f)};
     } else if (m_paused) {
-        m_frameTime = m_pausedTime;
-        m_frameTimeDelta = m_pausedTimeDelta;  // 使用保存的值
+        m_frame.time = m_pausedTime;
+        m_frame.timeDelta = m_pausedTimeDelta;  // 使用保存的值
         // 暂停期间 iDate 保持上一次的值
     } else {
         auto now = std::chrono::high_resolution_clock::now();
-        m_frameTime = std::chrono::duration<float>(now - m_startTime).count();
-        m_frameTimeDelta = std::chrono::duration<float>(now - m_lastFrameTime).count();
+        m_frame.time = std::chrono::duration<float>(now - m_startTime).count();
+        m_frame.timeDelta = std::chrono::duration<float>(now - m_lastFrameTime).count();
 
         std::time_t t = std::time(nullptr);
         std::tm* tm = std::localtime(&t);
-        m_frameDate = {static_cast<float>(tm->tm_year + 1900),
-                       static_cast<float>(tm->tm_mon + 1),
-                       static_cast<float>(tm->tm_mday),
-                       static_cast<float>(tm->tm_hour * 3600 + tm->tm_min * 60 + tm->tm_sec)};
+        m_frame.date = {static_cast<float>(tm->tm_year + 1900),
+                        static_cast<float>(tm->tm_mon + 1),
+                        static_cast<float>(tm->tm_mday),
+                        static_cast<float>(tm->tm_hour * 3600 + tm->tm_min * 60 + tm->tm_sec)};
     }
 
-    m_frameIndex = m_frameCount;
-}
-
-// iMouse 的 z/w 靠符号位编码状态：负值表示按钮已松开 / 本帧没点击。
-// Image、Buffer、Sound 的 iMouse 语义在 Shadertoy 里是同一套，所以必须共用这份编码。
-sf::Glsl::Vec4 ShadertoyEmulator::mouseUniform() const {
-    float z = m_mouseDown ? m_mouseClickX : -m_mouseClickX;
-    float w = m_mouseJustClicked ? m_mouseClickY : -m_mouseClickY;
-    return sf::Glsl::Vec4(m_mouseDownX, m_mouseDownY, z, w);
-}
-
-void ShadertoyEmulator::updateUniforms(RenderPass& pass, int width, int height) {
-    float iFrameRate = (m_frameTimeDelta > 0) ? 1.0f / m_frameTimeDelta : 60.0f;
-
-    sf::Shader& shader = pass.shader;
-    sf::Shader::bind(&shader);
-
-    if (pass.locIResolution >= 0) {
-        shader.setUniform("iResolution", sf::Glsl::Vec3(static_cast<float>(width),
-                                                          static_cast<float>(height), 1.0f));
-    }
-    if (pass.locITime >= 0) shader.setUniform("iTime", m_frameTime);
-    if (pass.locITimeDelta >= 0) shader.setUniform("iTimeDelta", m_frameTimeDelta);
-    if (pass.locIFrame >= 0) shader.setUniform("iFrame", m_frameIndex);
-    if (pass.locIFrameRate >= 0) shader.setUniform("iFrameRate", iFrameRate);
-
-    if (pass.locIMouse >= 0) {
-        shader.setUniform("iMouse", mouseUniform());
-    }
-
-    if (pass.locIDate >= 0) {
-        shader.setUniform("iDate", sf::Glsl::Vec4(m_frameDate[0], m_frameDate[1],
-                                                   m_frameDate[2], m_frameDate[3]));
-    }
-
-    if (pass.locChannelTime >= 0) {
-        std::array<float, 4> channelTimeValues;
-        for (int i = 0; i < 4; ++i) {
-            channelTimeValues[i] = m_frameTime;
-        }
-        shader.setUniformArray("iChannelTime", channelTimeValues.data(), 4);
-    }
-}
-
-void ShadertoyEmulator::resizeFramebuffers() {
-    // 输出目标也要跟着窗口尺寸走
-    if (m_outputTarget) {
-        if (!m_outputTarget->create(m_width, m_height, GL_RGBA8)) {
-            std::cerr << "Failed to resize output target" << std::endl;
-        }
-    }
-
-    for (auto& pass : m_passes) {
-        // 只调整使用窗口分辨率的 Buffer pass
-        if (!pass->isImage && pass->useWindowResolution) {
-            pass->width = m_width;
-            pass->height = m_height;
-
-            // 重新创建 FBO
-            pass->framebuffer = std::make_unique<GLFramebuffer>();
-            if (!pass->framebuffer->create(pass->width, pass->height)) {
-                std::cerr << "Failed to resize FBO for " << pass->name << std::endl;
-            }
-
-            if (pass->useDoubleBuffer) {
-                pass->framebufferAlt = std::make_unique<GLFramebuffer>();
-                if (!pass->framebufferAlt->create(pass->width, pass->height)) {
-                    std::cerr << "Failed to resize alternate FBO for " << pass->name << std::endl;
-                }
-            }
-
-            std::cout << "Resized " << pass->name << " to " << pass->width << "x" << pass->height << std::endl;
-        }
-    }
+    // 本帧帧号的快照，别删。m_frameCount 在 renderPasses() 末尾就自增了，而
+    // renderToScreen() 和截图都发生在那之后，它们要的是"刚渲染的这一帧"的号；
+    // 直接用 m_frameCount 会让 Image pass 的 iFrame 比 Buffer pass 多 1，导出文件名也整体偏移
+    m_frame.frameIndex = m_frameCount;
+    m_frame.mouse = sf::Glsl::Vec4(m_input.mouseX(), m_input.mouseY(),
+                                   m_input.mouseZ(), m_input.mouseW());
 }
 
 void ShadertoyEmulator::renderPasses() {
@@ -861,15 +362,8 @@ void ShadertoyEmulator::renderPasses() {
     // 否则 m_frameCount 自增会让两者差一整帧
     beginFrame();
 
-    // 更新键盘纹理
-    updateKeyboardTexture();
-
-    // 渲染所有 Buffer pass（非 Image 非 Sound）
-    for (auto& pass : m_passes) {
-        if (!pass->isImage && !pass->isSound) {
-            renderPass(*pass);
-        }
-    }
+    m_core.updateKeyboard(m_input.keys());
+    m_core.renderBufferPasses(m_frame);
 
     // 检查并生成声音（此时可以读取当前帧的 Buffer 数据）
     checkAndGenerateSound();
@@ -878,203 +372,8 @@ void ShadertoyEmulator::renderPasses() {
     m_frameCount++;
 }
 
-GLTexture* ShadertoyEmulator::getChannelTexture(const ChannelInput& input) {
-    if (input.type == ChannelInput::Type::Keyboard) {
-        return m_keyboardTexture.get();
-    } else if (input.type == ChannelInput::Type::Buffer) {
-        auto it = m_passMap.find(input.source);
-        if (it != m_passMap.end()) {
-            RenderPass* sourcePass = it->second;
-            GLFramebuffer* fb = sourcePass->getReadTarget();
-            if (fb) {
-                return &fb->colorTex;
-            }
-        }
-        std::cerr << "Buffer not found: " << input.source << std::endl;
-        return nullptr;
-    }
-    return m_textures.get(input, m_config.getBasePath());
-}
-
-// 绑定 pass 的 4 个输入通道，并把各通道实际纹理的尺寸报到 iChannelResolution。
-// 离屏的 buffer pass 和上屏的 Image pass 走的都是这一套，逻辑一模一样
-void ShadertoyEmulator::bindChannels(RenderPass& pass) {
-    std::array<sf::Glsl::Vec3, 4> channelResolutions;
-
-    for (int i = 0; i < 4; ++i) {
-        channelResolutions[i] = sf::Glsl::Vec3(0.0f, 0.0f, 0.0f);
-        if (!pass.channels[i]) continue;
-
-        GLTexture* tex = getChannelTexture(*pass.channels[i]);
-        if (!tex) continue;
-
-        tex->bind(i);
-
-        // 采样参数交给 sampler object，纹理自身状态一个字节都不动
-        glBindSampler(i, m_textures.sampler(pass.channels[i]->filter, pass.channels[i]->wrap));
-
-        // Buffer 内容每帧都变，mipmap 得重新生成；dirty 标记保证一帧内只生成一次
-        if (pass.channels[i]->filter == ChannelInput::Filter::Mipmap
-            && pass.channels[i]->type == ChannelInput::Type::Buffer
-            && tex->mipmapDirty) {
-            glGenerateMipmap(GL_TEXTURE_2D);
-            tex->mipmapDirty = false;
-        }
-
-        glUniform1i(pass.locChannels[i], i);  // location 为 -1 时 glUniform 是 no-op
-        channelResolutions[i] = sf::Glsl::Vec3(
-            static_cast<float>(tex->width),
-            static_cast<float>(tex->height), 1.0f);
-    }
-    if (pass.locChannelResolution >= 0) {
-        pass.shader.setUniformArray("iChannelResolution", channelResolutions.data(), 4);
-    }
-}
-
-void ShadertoyEmulator::renderPass(RenderPass& pass) {
-    if (pass.isImage) return;
-
-    GLFramebuffer* target = pass.getWriteTarget();
-
-    // 绑定 FBO
-    target->bind();
-    glViewport(0, 0, pass.width, pass.height);
-    // 这里刻意不清屏：Shadertoy 的 buffer 也不清，着色器里 discard 掉的像素因此会保留
-    // 上一帧的内容，不少 shader 靠这个把数据攒在缓冲区里（比如 Voxel game Evolution
-    // 只在头几帧生成材质纹理，之后全靠"不写就保留"）
-
-    // 绑定 shader
-    sf::Shader::bind(&pass.shader);
-
-    // 设置 uniforms。宽高显式传：Image pass 的 width/height 不随窗口缩放更新，
-    // renderToScreen 那边必须给窗口尺寸，不能图省事改用 pass 自己的
-    updateUniforms(pass, pass.width, pass.height);
-
-    bindChannels(pass);
-
-    // 渲染全屏四边形
-    glBindVertexArray(m_vao);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    glBindVertexArray(0);
-
-    // 解绑 sampler，避免残留影响后续绘制（尤其 ImGui）
-    for (int i = 0; i < 4; ++i) {
-        glBindSampler(i, 0);
-    }
-
-    // 解绑
-    GLFramebuffer::unbind();
-
-    // 切换缓冲
-    pass.swapBuffer();
-
-    // 刚写入的内容变了，下次被采样成 mipmap 时要重新生成
-    target->colorTex.mipmapDirty = true;
-}
-
-// 按名字找 pass，调试视图和 --dump-buffers 都靠它把命令行写的名字对上实际场景
-RenderPass* ShadertoyEmulator::findPass(const std::string& name) {
-    auto it = m_passMap.find(name);
-    return it == m_passMap.end() ? nullptr : it->second;
-}
-
-RenderPass* ShadertoyEmulator::debugViewPass() {
-    if (m_debugViewPass.empty()) return nullptr;
-
-    RenderPass* pass = findPass(m_debugViewPass);
-    // Sound 的输出是 vec2、也不上屏，没有能看的东西
-    if (!pass || pass->isSound || !pass->framebuffer) return nullptr;
-    return pass;
-}
-
-GLFramebuffer* ShadertoyEmulator::currentViewTarget() {
-    RenderPass* debug = debugViewPass();
-    return debug ? debug->getReadTarget() : m_outputTarget.get();
-}
-
-// 把 pass 的内容缩进一张小纹理给 ImGui 用。走 GPU blit 而不是 glGetTexImage：
-// 读回 CPU 会把管线卡住，一帧读好几个 buffer 很伤
-void ShadertoyEmulator::updateThumbnail(RenderPass& pass) {
-    // Image pass 没有自己的 FBO（它直接画到输出目标），撞上就得退出，
-    // 不能想当然以为凡是 pass 都有 framebuffer
-    GLFramebuffer* src = pass.getReadTarget();
-    if (!src) return;
-
-    const int w = src->colorTex.width;
-    const int h = src->colorTex.height;
-    if (w <= 0 || h <= 0) return;
-
-    // 长边固定，短边按比例。窗口缩放会改 buffer 尺寸，对不上就重建
-    constexpr float THUMBNAIL_MAX = 120.0f;
-    const float scale = THUMBNAIL_MAX / static_cast<float>(std::max(w, h));
-    const int tw = std::max(1, static_cast<int>(w * scale));
-    const int th = std::max(1, static_cast<int>(h * scale));
-
-    // 每个 pass 一张自己的缩略图 FBO，尺寸对不上就重建（窗口缩放会改 buffer 尺寸）
-    std::unique_ptr<GLFramebuffer>& thumb = m_thumbnails[pass.name];
-    if (!thumb || thumb->colorTex.width != tw || thumb->colorTex.height != th) {
-        thumb = std::make_unique<GLFramebuffer>();
-        if (!thumb->create(tw, th, GL_RGBA8)) {
-            thumb.reset();
-            return;
-        }
-    }
-
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, src->fbo);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, thumb->fbo);
-    glDisable(GL_SCISSOR_TEST);  // blit 受 draw framebuffer 的 scissor 影响
-    glBlitFramebuffer(0, 0, w, h, 0, 0, tw, th, GL_COLOR_BUFFER_BIT, GL_LINEAR);
-
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);  // 恢复默认，ImGui/SFML 需要 FBO 0
-}
-
 void ShadertoyEmulator::renderToScreen() {
-    // 渲染到输出目标而不是直接画到窗口：截图和显示共用同一份内容，
-    // 也避免直接读窗口的 back buffer（窗口最小化时它是 0×0）
-    m_outputTarget->bind();
-    glViewport(0, 0, m_width, m_height);
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-
-    if (RenderPass* debug = debugViewPass()) {
-        // 调试视图：把那个 pass 的 buffer 直接贴过来。刻意不重跑它的 shader——
-        // buffer 是有状态的，重跑等于把这一帧的内容又算了一遍，看到的就不是现场了
-        GLFramebuffer* src = debug->getReadTarget();
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, src->fbo);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_outputTarget->fbo);
-        glDisable(GL_SCISSOR_TEST);  // blit 受 draw framebuffer 的 scissor 影响，ImGui 可能留下状态
-        // 源是浮点、输出目标是 8bit，这个转换由硬件做
-        glBlitFramebuffer(0, 0, src->colorTex.width, src->colorTex.height,
-                          0, 0, m_width, m_height,
-                          GL_COLOR_BUFFER_BIT, GL_LINEAR);
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);  // 恢复默认，ImGui/SFML 需要 FBO 0
-    } else {
-        // 找到 Image 通道并渲染到屏幕
-        for (auto& pass : m_passes) {
-            if (!pass->isImage) continue;
-
-            sf::Shader::bind(&pass->shader);
-            // 这里给的是窗口尺寸而不是 pass 自己的：Image pass 不参与 resizeFramebuffers
-            // 的尺寸更新，窗口缩放后它的 width/height 是过期的
-            updateUniforms(*pass, m_width, m_height);
-
-            bindChannels(*pass);
-
-            // 渲染全屏四边形
-            glBindVertexArray(m_vao);
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-            glBindVertexArray(0);
-
-            // 解绑 sampler，避免残留影响 ImGui 渲染
-            for (int i = 0; i < 4; ++i) {
-                glBindSampler(i, 0);
-            }
-
-            break;
-        }
-    }
-
-    sf::Shader::bind(nullptr);
+    m_core.renderToScreen(m_frame, m_debugViewPass);
 
     // 离屏模式没有窗口可贴
     if (!m_options.isOffscreen()) {
@@ -1089,7 +388,7 @@ void ShadertoyEmulator::presentToWindow() {
     const int dstH = static_cast<int>(windowSize.y);
     if (dstW <= 0 || dstH <= 0) return;  // 最小化时窗口的 framebuffer 是 0×0
 
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, m_outputTarget->fbo);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, m_core.outputTarget()->fbo);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     glDisable(GL_SCISSOR_TEST);  // blit 受 draw framebuffer 的 scissor 影响，ImGui 可能留下状态
     glBlitFramebuffer(0, 0, m_width, m_height,
@@ -1099,279 +398,8 @@ void ShadertoyEmulator::presentToWindow() {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);  // 恢复默认，ImGui/SFML 需要 FBO 0
 }
 
-void ShadertoyEmulator::initKeyboardTexture() {
-    m_keyboardTexture = std::make_unique<GLTexture>();
-
-    glGenTextures(1, &m_keyboardTexture->id);
-    glBindTexture(GL_TEXTURE_2D, m_keyboardTexture->id);
-
-    m_keyboardTexture->width = 256;
-    m_keyboardTexture->height = 3;
-
-    // 初始化为全零
-    std::vector<float> zeroData(256 * 3 * 4, 0.0f);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, 256, 3, 0, GL_RGBA, GL_FLOAT, zeroData.data());
-
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-    // 初始化键盘状态数组
-    m_keyPressed.fill(false);
-    m_keyPressedPrev.fill(false);
-}
-
-void ShadertoyEmulator::updateKeyboardTexture() {
-    std::vector<float> data(256 * 3 * 4, 0.0f);
-
-    for (int i = 0; i < 256; ++i) {
-        // Row 0: current pressed state (keydown)
-        if (m_keyPressed[i]) {
-            data[i * 4] = 1.0f;
-        }
-        // Row 1: just pressed (keypressed)
-        if (m_keyPressed[i] && !m_keyPressedPrev[i]) {
-            data[(256 + i) * 4] = 1.0f;
-        }
-        // Row 2: toggle state
-        static std::array<bool, 256> keyToggle{};
-        if (m_keyPressed[i] && !m_keyPressedPrev[i]) {
-            keyToggle[i] = !keyToggle[i];
-        }
-        if (keyToggle[i]) {
-            data[(512 + i) * 4] = 1.0f;
-        }
-    }
-
-    glBindTexture(GL_TEXTURE_2D, m_keyboardTexture->id);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 3, GL_RGBA, GL_FLOAT, data.data());
-
-    m_keyPressedPrev = m_keyPressed;
-}
-
-int ShadertoyEmulator::mapSfmlKeyToShadertoy(sf::Keyboard::Key key) {
-    // 映射到 JavaScript keyCode (0-255)
-    // 参考: https://www.runoob.com/note/29592
-
-    using K = sf::Keyboard::Key;
-
-    // 字母键 A-Z: 65-90
-    if (key >= K::A && key <= K::Z) {
-        return static_cast<int>('A') + static_cast<int>(key) - static_cast<int>(K::A);
-    }
-
-    // 数字键 0-9: 48-57
-    if (key >= K::Num0 && key <= K::Num9) {
-        return static_cast<int>('0') + static_cast<int>(key) - static_cast<int>(K::Num0);
-    }
-
-    // 特殊键
-    switch (key) {
-        case K::Backspace:   return 8;
-        case K::Tab:         return 9;
-        case K::Enter:       return 13;
-        case K::LShift:
-        case K::RShift:      return 16;
-        case K::LControl:
-        case K::RControl:    return 17;
-        case K::LAlt:
-        case K::RAlt:        return 18;
-        case K::Escape:      return 27;
-        case K::Space:       return 32;
-        case K::PageUp:      return 33;
-        case K::PageDown:    return 34;
-        case K::End:         return 35;
-        case K::Home:        return 36;
-        case K::Left:        return 37;
-        case K::Up:          return 38;
-        case K::Right:       return 39;
-        case K::Down:        return 40;
-        case K::Insert:      return 45;
-        case K::Delete:      return 46;
-        // F键: 112-123
-        case K::F1:          return 112;
-        case K::F2:          return 113;
-        case K::F3:          return 114;
-        case K::F4:          return 115;
-        case K::F5:          return 116;
-        case K::F6:          return 117;
-        case K::F7:          return 118;
-        case K::F8:          return 119;
-        case K::F9:          return 120;
-        case K::F10:         return 121;
-        case K::F11:         return 122;
-        case K::F12:         return 123;
-        // 数字小键盘: 96-111
-        case K::Numpad0:     return 96;
-        case K::Numpad1:     return 97;
-        case K::Numpad2:     return 98;
-        case K::Numpad3:     return 99;
-        case K::Numpad4:     return 100;
-        case K::Numpad5:     return 101;
-        case K::Numpad6:     return 102;
-        case K::Numpad7:     return 103;
-        case K::Numpad8:     return 104;
-        case K::Numpad9:     return 105;
-        case K::Multiply:    return 106;  // *
-        case K::Add:         return 107;  // +
-        case K::Subtract:    return 109;  // -
-        case K::Divide:      return 111;  // /
-        // 符号键
-        case K::Semicolon:   return 186;  // ;:
-        case K::Equal:       return 187;  // =+
-        case K::Comma:       return 188;  // ,<
-        case K::Hyphen:      return 189;  // -_
-        case K::Period:      return 190;  // .>
-        case K::Slash:       return 191;  // /?
-        case K::Grave:       return 192;  // `~
-        case K::LBracket:    return 219;  // [{
-        case K::Backslash:   return 220;  // \|
-        case K::RBracket:    return 221;  // ]}
-        case K::Apostrophe:  return 222;  // '"
-        default:             return -1;   // 未映射的键
-    }
-}
-
-int ShadertoyEmulator::mapSfmlScancodeToShadertoy(sf::Keyboard::Scancode scancode) {
-    // 映射 SFML Scancode 到 JavaScript keyCode
-    // 用于处理 Key 枚举中没有的按键
-
-    using S = sf::Keyboard::Scancode;
-
-    switch (scancode) {
-        case S::CapsLock:       return 20;
-        case S::NumLock:        return 144;
-        case S::ScrollLock:     return 145;
-        case S::PrintScreen:    return 44;
-        case S::Pause:          return 19;
-        // 数字小键盘
-        case S::NumpadDecimal:  return 110;  // .
-        case S::NumpadDivide:   return 111;  // /
-        case S::NumpadMultiply: return 106;  // *
-        case S::NumpadMinus:    return 109;  // -
-        case S::NumpadPlus:     return 107;  // +
-        case S::NumpadEnter:    return 13;
-        // 多媒体键
-        case S::VolumeMute:     return 173;
-        case S::VolumeDown:     return 174;
-        case S::VolumeUp:       return 175;
-        case S::MediaStop:      return 179;
-        case S::MediaPlayPause: return 179;
-        default:                return -1;
-    }
-}
-
-// ========== 声音着色器实现 ==========
-
-std::string ShadertoyEmulator::wrapSoundShader(const std::string& userCode) {
-    GlslPreprocessor preprocessor;
-
-    // 公共代码和 pass 代码得合在一次预处理里跑：宏状态是连续的，
-    // 分开跑的话 pass 代码看不到公共代码里定义的宏
-    std::string commonCode;
-    if (!m_commonCode.empty()) {
-        commonCode = preprocessor.process(m_commonCode, m_config.getBasePath());
-    }
-    std::string passCode = preprocessor.continueProcess(userCode, m_config.getBasePath());
-
-    std::ostringstream shader;
-
-    shader << glslHeader(true);
-
-    if (!commonCode.empty()) {
-        shader << "// === Common Code ===\n";
-        shader << stripLineFilenames(commonCode) << "\n";
-    }
-
-    shader << "// === Sound Pass Code ===\n";
-    shader << stripLineFilenames(passCode) << "\n";
-
-    shader << "void main() {\n";
-    shader << "    int samp = iSampleOffset + int(floor(gl_FragCoord.x));\n";
-    shader << "    float time = float(samp) / float(iSampleRate);\n";
-    shader << "    fragColor = mainSound(samp, time);\n";
-    shader << "}\n";
-
-    return shader.str();
-}
-
-void ShadertoyEmulator::initSoundPass(RenderPass& pass) {
-    // 一批样本渲染成 batchSamples x 1 的纹理，宽度不能超过 GL_MAX_TEXTURE_SIZE，
-    // 否则 FBO 建不出来（WSL 的 d3d12 后端上限只有 16384，撑不下 22050）
-    GLint maxTextureSize = 0;
-    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTextureSize);
-    if (maxTextureSize > 0 && maxTextureSize < m_soundBatchSamples) {
-        m_soundBatchSamples = maxTextureSize;
-    }
-
-    // 创建 FBO 用于渲染音频样本
-    pass.framebuffer = std::make_unique<GLFramebuffer>();
-    if (!pass.framebuffer->create(m_soundBatchSamples, 1)) {
-        std::cerr << "Failed to create FBO for Sound" << std::endl;
-        return;
-    }
-
-    // 加载 shader
-    std::filesystem::path fullPath;
-    for (const auto& pc : m_config.getPasses()) {
-        if (pc.name == pass.name) {
-            fullPath = m_config.getBasePath() / pc.shaderPath;
-            break;
-        }
-    }
-
-    std::ifstream file(fullPath);
-    if (!file.is_open()) {
-        std::cerr << "Cannot open sound shader file: " << fullPath << std::endl;
-        return;
-    }
-
-    std::stringstream buffer;
-    buffer << file.rdbuf();
-    std::string userCode = buffer.str();
-
-    // 合并 common 代码
-    std::string combinedCode;
-    if (!m_commonCode.empty()) {
-        combinedCode = m_commonCode + "\n\n" + userCode;
-    } else {
-        combinedCode = userCode;
-    }
-
-    GlslPreprocessor preprocessor;
-    std::string processedCode = preprocessor.process(combinedCode, m_config.getBasePath());
-    std::string fullShader = wrapSoundShader(processedCode);
-
-    if (!pass.shader.loadFromMemory(fullShader, sf::Shader::Type::Fragment)) {
-        std::cerr << "Sound shader compilation failed" << std::endl;
-        return;
-    }
-
-    cacheUniformLocations(pass);
-
-    // 放在提前返回之前，导出模式也能看到 Sound pass 初始化成了什么样
-    std::cout << "Initialized sound pass: " << m_soundBatchSamples << " samples per batch ("
-              << (m_soundBatchSamples * 1000.0 / SOUND_SAMPLE_RATE) << "ms @ " << SOUND_SAMPLE_RATE << "Hz)" << std::endl;
-
-    if (m_options.isOffscreen()) {
-        // 导出模式只要数据，不建音频流也就不播放
-        return;
-    }
-
-    // 创建音频流
-    m_soundStream = std::make_unique<SoundShaderStream>();
-    m_soundStream->init(SOUND_SAMPLE_RATE);
-
-    // 预生成 6 个缓冲区（3秒）
-    for (int i = 0; i < 6; ++i) {
-        generateSoundBatch();
-    }
-    // 这里不 play()：音频的起步时刻要跟画面时间基准对齐，见 runWindow
-}
-
 void ShadertoyEmulator::checkAndGenerateSound() {
-    if (!m_soundPass) return;
+    if (!m_core.hasSoundPass()) return;
 
     if (m_options.isOffscreen()) {
         // 导出模式没有播放消耗，每帧固定生成一批
@@ -1388,7 +416,7 @@ void ShadertoyEmulator::checkAndGenerateSound() {
 }
 
 void ShadertoyEmulator::generateSoundBatch() {
-    if (!m_soundPass) return;
+    if (!m_core.hasSoundPass()) return;
 
     if (m_options.isOffscreen() && m_options.fps > 0.0f) {
         // 导出模式要把音频对齐到视频时间轴：第 N 帧结束时正好走到 N+1 帧对应的时间点。
@@ -1398,7 +426,7 @@ void ShadertoyEmulator::generateSoundBatch() {
         // 帧率低时一帧要的样本可能超过 FBO 一次能渲染的量，拆成几批补完
         int remaining = static_cast<int>(target - m_soundSamplePosition);
         while (remaining > 0) {
-            const int batchSamples = std::min(remaining, m_soundBatchSamples);
+            const int batchSamples = std::min(remaining, m_core.soundBatchSamples());
             renderSoundBatch(batchSamples);
             remaining -= batchSamples;
         }
@@ -1406,388 +434,28 @@ void ShadertoyEmulator::generateSoundBatch() {
     }
 
     // 窗口模式：跟着播放进度补货
-    renderSoundBatch(m_soundBatchSamples);
+    renderSoundBatch(m_core.soundBatchSamples());
 }
 
+// 采样怎么算是 RenderCore 的事，这里只管把结果送去播放、编码和存档
 void ShadertoyEmulator::renderSoundBatch(int batchSamples) {
     if (batchSamples <= 0) return;
 
-    // glGetTexImage 读的是整张纹理，缓冲得按 FBO 宽度来，不能按实际渲染的窄条
-    std::vector<float> floatData(static_cast<size_t>(m_soundBatchSamples) * 2);
-    std::vector<int16_t> audioSamples(static_cast<size_t>(batchSamples) * 2);  // 立体声
+    SoundState state;
+    state.time = static_cast<float>(m_soundSamplePosition) / SOUND_SAMPLE_RATE;
+    state.frame = m_frameCount;
+    state.sampleOffset = m_soundSamplePosition;
+    state.mouse = sf::Glsl::Vec4(m_input.mouseX(), m_input.mouseY(),
+                                 m_input.mouseZ(), m_input.mouseW());
 
-    // 计算当前时间
-    float iTime = static_cast<float>(m_soundSamplePosition) / SOUND_SAMPLE_RATE;
-
-    // 绑定 FBO
-    m_soundPass->framebuffer->bind();
-    glViewport(0, 0, batchSamples, 1);
-    m_soundPass->framebuffer->clear();
-
-    // 绑定 shader
-    sf::Shader::bind(&m_soundPass->shader);
-
-    // 设置 uniforms，只设 shader 里真的存在的（否则 SFML 每批都刷 not found 警告）
-    RenderPass& sound = *m_soundPass;
-    if (sound.locIResolution >= 0) {
-        sound.shader.setUniform("iResolution", sf::Glsl::Vec3(static_cast<float>(batchSamples), 1.0f, 1.0f));
-    }
-    if (sound.locITime >= 0) sound.shader.setUniform("iTime", iTime);
-    if (sound.locITimeDelta >= 0) sound.shader.setUniform("iTimeDelta", 1.0f / SOUND_SAMPLE_RATE);
-    if (sound.locIFrame >= 0) sound.shader.setUniform("iFrame", m_frameCount);
-    if (sound.locIFrameRate >= 0) sound.shader.setUniform("iFrameRate", static_cast<float>(SOUND_SAMPLE_RATE));
-    if (sound.locIMouse >= 0) {
-        sound.shader.setUniform("iMouse", mouseUniform());
-    }
-    if (sound.locIDate >= 0) sound.shader.setUniform("iDate", sf::Glsl::Vec4(2024.0f, 1.0f, 1.0f, 0.0f));
-    if (sound.locISampleRate >= 0) sound.shader.setUniform("iSampleRate", SOUND_SAMPLE_RATE);
-    if (sound.locISampleOffset >= 0) sound.shader.setUniform("iSampleOffset", static_cast<int>(m_soundSamplePosition));
-
-    // 设置 iChannel uniforms（绑定其他 Buffer 的纹理）
-    for (int ch = 0; ch < 4; ++ch) {
-        std::string uniformName = "iChannel" + std::to_string(ch);
-        if (m_soundPass->channels[ch]) {
-            GLTexture* tex = getChannelTexture(*m_soundPass->channels[ch]);
-            if (tex) {
-                glActiveTexture(GL_TEXTURE0 + ch);
-                glBindTexture(GL_TEXTURE_2D, tex->id);
-                glBindSampler(ch, m_textures.sampler(m_soundPass->channels[ch]->filter,
-                                                     m_soundPass->channels[ch]->wrap));
-                if (m_soundPass->locChannels[ch] >= 0) {
-                    m_soundPass->shader.setUniform(uniformName, sf::Shader::CurrentTexture);
-                }
-            }
-        }
-    }
-
-    // iChannelTime[4]（与 updateUniforms 保持一致，否则 sound shader 读到 0）
-    std::array<float, 4> channelTimeValues;
-    for (int i = 0; i < 4; ++i) {
-        channelTimeValues[i] = iTime;
-    }
-    if (m_soundPass->locChannelTime >= 0) {
-        m_soundPass->shader.setUniformArray("iChannelTime", channelTimeValues.data(), 4);
-    }
-
-    // 渲染
-    glBindVertexArray(m_vao);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    glBindVertexArray(0);
-
-    for (int i = 0; i < 4; ++i) {
-        glBindSampler(i, 0);
-    }
-
-    GLFramebuffer::unbind();
-
-    // 读取 FBO 数据
-    glBindTexture(GL_TEXTURE_2D, m_soundPass->framebuffer->colorTex.id);
-    glGetTexImage(GL_TEXTURE_2D, 0, GL_RG, GL_FLOAT, floatData.data());
-
-    // 转换为 16 位音频
-    for (int i = 0; i < batchSamples; ++i) {
-        float left = std::clamp(floatData[i * 2], -1.0f, 1.0f);
-        float right = std::clamp(floatData[i * 2 + 1], -1.0f, 1.0f);
-        audioSamples[i * 2] = static_cast<int16_t>(left * 32767);
-        audioSamples[i * 2 + 1] = static_cast<int16_t>(right * 32767);
-    }
+    m_core.renderSoundBatch(batchSamples, state, m_audioSamples);
 
     if (m_soundStream) {
-        m_soundStream->pushSamples(audioSamples);
+        m_soundStream->pushSamples(m_audioSamples);
     }
-    // 视频模式：这一帧的音频直接交给编码器，不用等跑完再拼
-    if (m_videoWriter) {
-        m_videoWriter->writeAudio(audioSamples.data(), batchSamples);
-    }
-    if (!m_options.audioDumpPath.empty()) {
-        m_audioDumpSamples.insert(m_audioDumpSamples.end(), audioSamples.begin(), audioSamples.end());
-    }
+    // 视频音轨和 WAV 各判各的去向
+    m_exporter.appendAudio(m_audioSamples);
     m_soundSamplePosition += batchSamples;
-}
-
-void ShadertoyEmulator::initImGui() {
-    // 初始化失败就退回无 GUI 模式，否则后面每帧的 Update/Render 都会崩
-    if (!ImGui::SFML::Init(m_window)) {
-        std::cerr << "Failed to initialize ImGui" << std::endl;
-        m_enableGui = false;
-        return;
-    }
-    ImGui::StyleColorsDark();
-
-    // 默认样式的直角和紧凑间距看着很生硬，加点圆角、留白放宽些
-    ImGuiStyle& style = ImGui::GetStyle();
-    style.WindowRounding = 6.0f;
-    style.FrameRounding = 4.0f;
-    style.GrabRounding = 4.0f;
-    style.WindowPadding = ImVec2(10.0f, 10.0f);
-    style.FramePadding = ImVec2(8.0f, 5.0f);
-    style.ItemSpacing = ImVec2(8.0f, 7.0f);
-    style.WindowTitleAlign = ImVec2(0.5f, 0.5f);
-}
-
-void ShadertoyEmulator::shutdownImGui() {
-    ImGui::SFML::Shutdown();
-}
-
-void ShadertoyEmulator::renderImGui() {
-    ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(320, 190), ImGuiCond_FirstUseEver);
-    // 半透明，压在画面上时不至于糊住一大块
-    ImGui::SetNextWindowBgAlpha(0.85f);
-
-    ImGui::Begin("Controls", nullptr, ImGuiWindowFlags_NoCollapse);
-
-    const ImGuiStyle& style = ImGui::GetStyle();
-    const float buttonWidth = (ImGui::GetContentRegionAvail().x - style.ItemSpacing.x * 2.0f) / 3.0f;
-    const ImVec2 buttonSize(buttonWidth, 26.0f);
-
-    // 绿=继续走、琥珀=会停下、红=从头来，靠颜色区分比读字快
-    if (m_paused) {
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.45f, 0.26f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.26f, 0.58f, 0.33f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.15f, 0.36f, 0.21f, 1.0f));
-        const bool resumeClicked = ImGui::Button("Resume", buttonSize);
-        ImGui::PopStyleColor(3);
-
-        if (resumeClicked) {
-            m_paused = false;
-            // 恢复时间：调整 startTime 使 iTime 从暂停处继续
-            auto now = std::chrono::high_resolution_clock::now();
-            m_startTime = now - std::chrono::duration_cast<std::chrono::high_resolution_clock::duration>(
-                std::chrono::duration<float>(m_pausedTime));
-
-            if (m_pausedTime > m_pauseAnchor) {
-                // 单帧步进把暂停点往前推过，音频得按新位置重新生成才追得上画面。
-                // 音频是时间的确定函数，从同一时刻重生成的内容和原来一致。
-                // 重建要碰 FBO，不能在 ImGui 的回调里做，交给主循环
-                m_audioResyncTarget = m_pausedTime;
-                m_audioResyncPending = true;
-            } else if (m_soundStream) {
-                // 没步进过就直接接着播。走重建那条路要重启音频设备、重填队列，
-                // 中间会有一小段没声音
-                m_soundStream->play();
-            }
-        }
-    } else {
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.48f, 0.36f, 0.10f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.60f, 0.45f, 0.13f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.38f, 0.29f, 0.08f, 1.0f));
-        const bool pauseClicked = ImGui::Button("Pause", buttonSize);
-        ImGui::PopStyleColor(3);
-
-        if (pauseClicked) {
-            pausePlayback();
-        }
-    }
-
-    ImGui::SameLine();
-
-    // 单帧步进。位置一直占着、非暂停时变灰，免得按钮行随状态左右跳
-    if (ImGui::Button("Next Frame", buttonSize)) {
-        // 没暂停就先暂停，省得状态不对时点了半天没反应
-        pausePlayback();
-        // 暂停时 iTime 是冻在 m_pausedTime 上的，只重渲染拿到的还是同一帧。
-        // 把暂停点往前推一帧，画面才真的往前走
-        m_pausedTime += (m_pausedTimeDelta > 0.0f) ? m_pausedTimeDelta : (1.0f / 60.0f);
-        m_stepFrame = true;
-    }
-
-    ImGui::SameLine();
-
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.42f, 0.21f, 0.21f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.55f, 0.27f, 0.27f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.33f, 0.16f, 0.16f, 1.0f));
-    if (ImGui::Button("Reset", buttonSize)) {
-        resetShader();
-    }
-    ImGui::PopStyleColor(3);
-
-    ImGui::SeparatorText("Status");
-
-    // 标签列宽度按最长的那个算，几行数值才能对齐成一条
-    const float labelWidth = ImGui::CalcTextSize("Resolution").x + style.ItemSpacing.x * 2.0f;
-    const float currentTime = m_paused ? m_pausedTime :
-        std::chrono::duration<float>(std::chrono::high_resolution_clock::now() - m_startTime).count();
-
-    ImGui::TextDisabled("Time");
-    ImGui::SameLine(labelWidth);
-    ImGui::Text("%.2f s", currentTime);
-
-    ImGui::TextDisabled("Frame");
-    ImGui::SameLine(labelWidth);
-    ImGui::Text("%d", m_frameCount);
-
-    ImGui::TextDisabled("FPS");
-    ImGui::SameLine(labelWidth);
-    // 掉到 30 以下标红，卡顿时一眼能看见
-    const bool slow = m_currentFps < 30.0f;
-    if (slow) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.92f, 0.45f, 0.42f, 1.0f));
-    ImGui::Text("%.1f", m_currentFps);
-    if (slow) ImGui::PopStyleColor();
-
-    ImGui::TextDisabled("Resolution");
-    ImGui::SameLine(labelWidth);
-    ImGui::Text("%d x %d", m_width, m_height);
-
-    ImGui::SeparatorText("Pixel");
-    ImGui::Checkbox("Probe", &m_showPixelProbe);
-
-    // 读的是画面上此刻显示的那份数据：看 buffer 时是原始浮点，负值和超过 1 的都还在；
-    // 看 Image 时是输出目标那份 8bit，读出来已经量化过
-    const sf::Vector2u winSize = m_window.getSize();
-    const ImVec2 mouse = ImGui::GetIO().MousePos;
-    // 鼠标压在 ImGui 窗口上时读到的不是用户想看的那块画面，跳过
-    const bool overImage = m_showPixelProbe && winSize.x > 0 && winSize.y > 0
-        && !ImGui::GetIO().WantCaptureMouse
-        && mouse.x >= 0.0f && mouse.y >= 0.0f
-        && mouse.x < static_cast<float>(winSize.x) && mouse.y < static_cast<float>(winSize.y);
-
-    if (overImage) {
-        // 窗口可以缩放到和渲染分辨率不同的尺寸，按比例换算回纹理坐标。
-        // y 要翻过来：鼠标坐标原点在左上，GL 的在左下
-        const int x = std::clamp(
-            static_cast<int>(mouse.x / winSize.x * m_width), 0, m_width - 1);
-        const int y = std::clamp(
-            static_cast<int>((1.0f - mouse.y / winSize.y) * m_height), 0, m_height - 1);
-
-        // glReadPixels 是同步的，要等 GPU 把这一帧画完才拿得到值，每帧都读会一直
-        // 卡住管线（重负载 shader 上实测 7~12ms，帧预算才 16.7ms）。
-        // 鼠标一动马上读——位置变了值肯定也变；不动的时候降频，画面自己在动也追得上
-        const bool moved = (mouse.x != m_probeLastX || mouse.y != m_probeLastY);
-        if (moved || ++m_probeIdleFrames >= 15) {
-            m_probeIdleFrames = 0;
-            m_probeLastX = mouse.x;
-            m_probeLastY = mouse.y;
-
-            glBindFramebuffer(GL_READ_FRAMEBUFFER, currentViewTarget()->fbo);
-            glReadPixels(x, y, 1, 1, GL_RGBA, GL_FLOAT, m_probePixel.data());
-            glBindFramebuffer(GL_FRAMEBUFFER, 0);  // 恢复默认，ImGui/SFML 需要 FBO 0
-        }
-
-        ImGui::TextDisabled("At");
-        ImGui::SameLine(labelWidth);
-        ImGui::Text("%d, %d", x, y);
-
-        // 顺手把颜色画成一块：对着四个数在脑子里拼颜色太费劲。
-        // 超范围的分量按夹紧后的值显示，越界这件事交给下面标红的数字去说
-        ImGui::SameLine();
-        const ImVec2 swatchPos = ImGui::GetCursorScreenPos();
-        const float swatchSize = ImGui::GetTextLineHeight();
-        const ImVec2 swatchEnd(swatchPos.x + swatchSize, swatchPos.y + swatchSize);
-        const ImVec4 swatch(std::clamp(m_probePixel[0], 0.0f, 1.0f),
-                            std::clamp(m_probePixel[1], 0.0f, 1.0f),
-                            std::clamp(m_probePixel[2], 0.0f, 1.0f), 1.0f);
-        ImDrawList* drawList = ImGui::GetWindowDrawList();
-        drawList->AddRectFilled(swatchPos, swatchEnd, ImGui::ColorConvertFloat4ToU32(swatch));
-        drawList->AddRect(swatchPos, swatchEnd, IM_COL32(130, 130, 130, 255));
-        ImGui::Dummy(ImVec2(swatchSize, swatchSize));  // 占位，让后面的布局知道这里有东西
-
-        // 逐个分量显示。越界（负值或超过 1）标红——调数值时找的往往就是这两种
-        static const char* const componentNames[4] = {"R", "G", "B", "A"};
-        for (int i = 0; i < 4; ++i) {
-            ImGui::TextDisabled("%s", componentNames[i]);
-            ImGui::SameLine(labelWidth);
-
-            const bool outOfRange = m_probePixel[i] < 0.0f || m_probePixel[i] > 1.0f;
-            if (outOfRange) {
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.92f, 0.45f, 0.42f, 1.0f));
-            }
-            ImGui::Text("%.4f", m_probePixel[i]);
-            if (outOfRange) ImGui::PopStyleColor();
-        }
-    } else {
-        ImGui::TextDisabled("Point at the image to read a pixel");
-    }
-
-    ImGui::End();
-
-    // 调试视图的 pass 列表。单独开一个窗口：pass 一多，塞进 Controls 会把它撑得老长。
-    // 缩略图展开后窗口能长到屏幕外面去，限制个最大高度让它自己滚动
-    ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), ImVec2(FLT_MAX, 700.0f));
-    ImGui::SetNextWindowPos(ImVec2(345, 10), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowBgAlpha(0.85f);
-    if (ImGui::Begin("Passes", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        for (auto& pass : m_passes) {
-            if (pass->isSound) continue;  // 音频没有能看的画面
-
-            // 看 Image 就等于没开调试视图，其余 pass 得名字对上才算选中
-            const bool selected = pass->isImage ? m_debugViewPass.empty()
-                                                : (m_debugViewPass == pass->name);
-            // Image 的 width/height 不随窗口缩放更新，显示窗口的才对
-            const int w = pass->isImage ? m_width : pass->width;
-            const int h = pass->isImage ? m_height : pass->height;
-
-            const std::string label = pass->name + "   " + std::to_string(w) + "x"
-                + std::to_string(h) + "##" + pass->name;
-            if (ImGui::RadioButton(label.c_str(), selected)) {
-                m_debugViewPass = pass->isImage ? "" : pass->name;
-            }
-        }
-
-        // 名字打错时画面会照常显示 Image，不提示的话很容易以为调试视图没生效
-        if (!m_debugViewPass.empty() && !debugViewPass()) {
-            ImGui::TextColored(ImVec4(0.92f, 0.45f, 0.42f, 1.0f),
-                               "No pass named \"%s\"", m_debugViewPass.c_str());
-        }
-
-        // 当前看的这个 pass 的输入接了什么。排查"接错通道/漏接"比翻一遍 config 快得多
-        RenderPass* viewed = debugViewPass();
-        if (!viewed) {
-            // 没开调试视图时画面上是 Image
-            for (auto& pass : m_passes) {
-                if (pass->isImage) { viewed = pass.get(); break; }
-            }
-        }
-        if (viewed) {
-            // 默认收起：通道表只在排查"接错/漏接"时才看，平时白占四五行
-            const std::string header = "Inputs: " + viewed->name + "##inputs";
-            if (ImGui::CollapsingHeader(header.c_str())) {
-                bool anyInput = false;
-                for (int i = 0; i < 4; ++i) {
-                    const auto& channel = viewed->channels[i];
-                    if (!channel) continue;  // 没接的通道不占行
-                    anyInput = true;
-
-                    ImGui::TextDisabled("[%d] %s", i, channelSourceName(*channel).c_str());
-                    ImGui::SameLine();
-                    ImGui::TextDisabled("%s/%s", filterName(channel->filter),
-                                        wrapName(channel->wrap));
-                }
-                if (!anyInput) ImGui::TextDisabled("(no inputs)");
-            }
-        }
-
-        // 缩略图默认关着：每个 buffer 每帧都要 blit 一次，不看时白花这份开销
-        ImGui::SeparatorText("Thumbnails");
-        ImGui::Checkbox("Show", &m_showThumbnails);
-        if (m_showThumbnails) {
-            int shown = 0;
-            for (auto& pass : m_passes) {
-                // 缩略图是给 buffer 看的。Image 的内容就是画面本身，抬头就能看，
-                // 而且它没有自己的 FBO，硬取会拿到空指针
-                if (pass->isImage || pass->isSound) continue;
-
-                updateThumbnail(*pass);
-
-                const auto it = m_thumbnails.find(pass->name);
-                if (it == m_thumbnails.end() || !it->second) continue;
-                const GLTexture& tex = it->second->colorTex;
-
-                // 两个一行：竖着排的话四五个 buffer 就把窗口拉到屏幕外面去了
-                if (shown % 2 != 0) ImGui::SameLine();
-                ImGui::BeginGroup();
-                ImGui::TextDisabled("%s", pass->name.c_str());
-                // ImGui-SFML 的 ImTextureID 就是 GL 纹理名，直接递给原生 Image 接口。
-                // uv 的 y 对调：GL 纹理原点在左下，ImGui 的在左上，不换会上下颠倒
-                ImGui::Image(static_cast<ImTextureID>(tex.id),
-                             ImVec2(static_cast<float>(tex.width), static_cast<float>(tex.height)),
-                             ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
-                ImGui::EndGroup();
-                shown++;
-            }
-        }
-    }
-    ImGui::End();
 }
 
 void ShadertoyEmulator::resetShader() {
