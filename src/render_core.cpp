@@ -227,7 +227,7 @@ bool RenderCore::loadShader(RenderPass& pass, const PassConfig& config) {
     }
 
     // 包装预处理后的代码
-    std::string fullShader = wrapProcessedShader(processedCode);
+    std::string fullShader = wrapProcessedShader(processedCode, pass.isImage);
 
     if (!pass.shader.loadFromMemory(fullShader, sf::Shader::Type::Fragment)) {
         std::cerr << "Shader compilation failed for " << pass.name << std::endl;
@@ -262,7 +262,7 @@ void RenderCore::cacheUniformLocations(RenderPass& pass) {
     }
 }
 
-std::string RenderCore::wrapProcessedShader(const std::string& processedCode) {
+std::string RenderCore::wrapProcessedShader(const std::string& processedCode, bool isImage) {
     std::ostringstream shader;
 
     shader << glslHeader(false);
@@ -274,15 +274,21 @@ std::string RenderCore::wrapProcessedShader(const std::string& processedCode) {
     // 添加预处理后的代码
     shader << stripLineFilenames(processedCode) << "\n";
 
-    // 添加 main 函数。照 Shadertoy 的包装来：初值只是个哨兵，写完再用 xyz 重建整个
-    // vec4、把 alpha 钉死成 1。顺序不能反——GLSL 的 out 参数是「被调用者定义」的，
-    // 调用前给的值不作数，shader 只写 .rgb 时 .a 是未定义值，只有调用之后再盖一层
-    // 才算数（Shadertoy 的 WebGL2 路径是 vec4(color.xyz, 1.0)，WebGL1 是 color.w = 1.0）
+    // 添加 main 函数。初值只是个哨兵：GLSL 的 out 参数是「被调用者定义」的，调用
+    // 前给的值不作数，shader 只写 .rgb 时 .a 是未定义值，所以哨兵之后还得再盖一层。
+    // 盖法按通道分，对应 Shadertoy 的 mImagePassFooter 和 MakeHeader_Buffer 两套
+    // footer：Image 通道输出到屏幕，alpha 没有意义（还让窗口和导出的 PNG 带透明），
+    // 钉死成 1；Buffer 通道的 alpha 是数据，流体、粒子这类 shader 拿它存帧间状态，
+    // 必须原样透传
     shader << "void main() {\n";
     shader << "    vec4 color = vec4(1e20);\n";
     shader << "    float _frame = float(iFrame);\n";
     shader << "    mainImage(color, gl_FragCoord.xy);\n";
-    shader << "    fragColor = vec4(color.xyz, 1.0);\n";
+    if (isImage) {
+        shader << "    fragColor = vec4(color.xyz, 1.0);\n";
+    } else {
+        shader << "    fragColor = color;\n";
+    }
     shader << "}\n";
 
     return shader.str();

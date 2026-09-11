@@ -78,7 +78,9 @@ private:
     void initPasses();
     bool loadShader(RenderPass& pass, const PassConfig& config);
     void cacheUniformLocations(RenderPass& pass);
-    std::string wrapProcessedShader(const std::string& processedCode);
+    // isImage 决定输出怎么写：Image 通道是屏幕，alpha 钉成 1；Buffer 通道的 alpha
+    // 是数据，原样透传（Shadertoy 的 image 和 buffer 也是两套不同的 footer）
+    std::string wrapProcessedShader(const std::string& processedCode, bool isImage);
     std::string wrapSoundShader(const std::string& processedCode);
     bool initSoundPass(RenderPass& pass);  // 编译不过返回 false，调用方当它不存在
     void initKeyboardTexture();
