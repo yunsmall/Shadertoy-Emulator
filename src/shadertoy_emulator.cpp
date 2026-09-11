@@ -10,6 +10,8 @@
 #include <ctime>
 #include <cmath>
 #include <stdexcept>
+#include <algorithm>
+#include <cfloat>
 
 // 全屏四边形顶点数据
 static const float QUAD_VERTICES[] = {
@@ -19,6 +21,36 @@ static const float QUAD_VERTICES[] = {
     -1.0f,  1.0f,
      1.0f,  1.0f
 };
+
+// 下面三个只给 ImGui 的通道列表用
+static const char* filterName(ChannelInput::Filter filter) {
+    switch (filter) {
+        case ChannelInput::Filter::Linear:  return "linear";
+        case ChannelInput::Filter::Nearest: return "nearest";
+        case ChannelInput::Filter::Mipmap:  return "mipmap";
+    }
+    return "?";
+}
+
+static const char* wrapName(ChannelInput::Wrap wrap) {
+    switch (wrap) {
+        case ChannelInput::Wrap::Clamp:  return "clamp";
+        case ChannelInput::Wrap::Repeat: return "repeat";
+        case ChannelInput::Wrap::Mirror: return "mirror";
+    }
+    return "?";
+}
+
+// 通道接的是什么。纹理只留文件名——调试面板就那么宽，完整路径会把窗口撑开
+static std::string channelSourceName(const ChannelInput& channel) {
+    switch (channel.type) {
+        case ChannelInput::Type::Buffer:   return channel.source;
+        case ChannelInput::Type::Keyboard: return "keyboard";
+        case ChannelInput::Type::Texture:
+            return std::filesystem::path(channel.source).filename().string();
+    }
+    return "?";
+}
 
 // 建出导出要用的目录，失败时错误信息在这里就打了，调用方只管退出
 static bool ensureDir(const std::filesystem::path& dir) {
@@ -36,7 +68,8 @@ static bool ensureDir(const std::filesystem::path& dir) {
 
 ShadertoyEmulator::ShadertoyEmulator(const ShaderConfig& config, const RunOptions& options)
     : m_options(options), m_width(config.getWidth()), m_height(config.getHeight()),
-      m_enableGui(options.enableGui), m_config(config), m_frameCount(0) {
+      m_enableGui(options.enableGui), m_debugViewPass(options.debugViewPass),
+      m_config(config), m_frameCount(0) {
 
     // 离屏模式没有窗口，ImGui 没有可依附的目标
     if (m_options.isOffscreen()) {
@@ -425,6 +458,28 @@ void ShadertoyEmulator::runImages() {
               << ") step " << range.step << " (" << range.count() << " images) -> "
               << std::filesystem::absolute(m_options.imageDir) << std::endl;
 
+    // 要一并导出的 buffer，名字在这里一次性解析成指针，免得每帧去查一遍 map
+    std::vector<RenderPass*> dumpTargets;
+    bool dumpAll = false;
+    for (const std::string& name : m_options.dumpBuffers) {
+        if (name == "all") { dumpAll = true; continue; }
+
+        RenderPass* pass = findPass(name);
+        // 名字写错就说一声。跳过而不报错是为了让一次列一串名字时还能导其余的，
+        // 但完全不吭声会让人以为导出了
+        if (!pass || pass->isImage || pass->isSound) {
+            std::cerr << "--dump-buffers: no buffer pass named \"" << name << "\", skipped"
+                      << std::endl;
+            continue;
+        }
+        dumpTargets.push_back(pass);
+    }
+    if (dumpAll) {
+        for (auto& pass : m_passes) {
+            if (!pass->isImage && !pass->isSound) dumpTargets.push_back(pass.get());
+        }
+    }
+
     int saved = 0;
     while (m_frameCount < range.stop) {
         renderPasses();
@@ -432,6 +487,10 @@ void ShadertoyEmulator::runImages() {
 
         if (range.contains(m_frameIndex)) {
             captureFrame(m_frameIndex);
+            // buffer 也只导存盘的那几帧：--images 0:300:1 配 4 个 buffer 就是上千个文件
+            for (RenderPass* pass : dumpTargets) {
+                captureBuffer(*pass, m_frameIndex);
+            }
             saved++;
         }
     }
@@ -514,6 +573,43 @@ void ShadertoyEmulator::captureFrame(int frameIndex) {
     name << std::setfill('0') << std::setw(5) << frameIndex << ".png";
 
     std::filesystem::path outPath = m_options.imageDir / name.str();
+    if (!image.saveToFile(outPath)) {
+        std::cerr << "Failed to save " << outPath << std::endl;
+    }
+}
+
+// 把一个 buffer 的内容写成 PNG。buffer 里存的是浮点，直接当颜色存会把负值和超过 1 的
+// 部分全削掉，所以先乘一个增益再 clamp——想看清暗部的中间值时把增益调大
+void ShadertoyEmulator::captureBuffer(RenderPass& pass, int frameIndex) {
+    GLFramebuffer* target = pass.getReadTarget();
+    const int w = target->colorTex.width;
+    const int h = target->colorTex.height;
+    if (w <= 0 || h <= 0) return;
+
+    std::vector<float> raw(static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, target->fbo);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, w, h, GL_RGBA, GL_FLOAT, raw.data());
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    std::vector<uint8_t> pixels(raw.size());
+    for (size_t i = 0; i < raw.size(); ++i) {
+        const float v = std::clamp(raw[i] * m_options.dumpBufferGain, 0.0f, 1.0f);
+        pixels[i] = static_cast<uint8_t>(v * 255.0f + 0.5f);
+    }
+
+    // glReadPixels 是 bottom-up，sf::Image 期望 top-down
+    sf::Image image(sf::Vector2u(static_cast<unsigned>(w), static_cast<unsigned>(h)), pixels.data());
+    image.flipVertically();
+
+    std::ostringstream name;
+    name << std::setfill('0') << std::setw(5) << frameIndex << ".png";
+
+    // 放子目录：和主图平级的话，按 *.png 数张数的脚本会多数出一堆
+    const std::filesystem::path outPath =
+        m_options.imageDir / "buffers" / pass.name / name.str();
+    std::error_code ec;
+    std::filesystem::create_directories(outPath.parent_path(), ec);
     if (!image.saveToFile(outPath)) {
         std::cerr << "Failed to save " << outPath << std::endl;
     }
@@ -1012,6 +1108,62 @@ void ShadertoyEmulator::renderPass(RenderPass& pass) {
     target->colorTex.mipmapDirty = true;
 }
 
+// 按名字找 pass，调试视图和 --dump-buffers 都靠它把命令行写的名字对上实际场景
+ShadertoyEmulator::RenderPass* ShadertoyEmulator::findPass(const std::string& name) {
+    auto it = m_passMap.find(name);
+    return it == m_passMap.end() ? nullptr : it->second;
+}
+
+ShadertoyEmulator::RenderPass* ShadertoyEmulator::debugViewPass() {
+    if (m_debugViewPass.empty()) return nullptr;
+
+    RenderPass* pass = findPass(m_debugViewPass);
+    // Sound 的输出是 vec2、也不上屏，没有能看的东西
+    if (!pass || pass->isSound || !pass->framebuffer) return nullptr;
+    return pass;
+}
+
+GLFramebuffer* ShadertoyEmulator::currentViewTarget() {
+    RenderPass* debug = debugViewPass();
+    return debug ? debug->getReadTarget() : m_outputTarget.get();
+}
+
+// 把 pass 的内容缩进一张小纹理给 ImGui 用。走 GPU blit 而不是 glGetTexImage：
+// 读回 CPU 会把管线卡住，一帧读好几个 buffer 很伤
+void ShadertoyEmulator::updateThumbnail(RenderPass& pass) {
+    // Image pass 没有自己的 FBO（它直接画到输出目标），撞上就得退出，
+    // 不能想当然以为凡是 pass 都有 framebuffer
+    GLFramebuffer* src = pass.getReadTarget();
+    if (!src) return;
+
+    const int w = src->colorTex.width;
+    const int h = src->colorTex.height;
+    if (w <= 0 || h <= 0) return;
+
+    // 长边固定，短边按比例。窗口缩放会改 buffer 尺寸，对不上就重建
+    constexpr float THUMBNAIL_MAX = 120.0f;
+    const float scale = THUMBNAIL_MAX / static_cast<float>(std::max(w, h));
+    const int tw = std::max(1, static_cast<int>(w * scale));
+    const int th = std::max(1, static_cast<int>(h * scale));
+
+    // 每个 pass 一张自己的缩略图 FBO，尺寸对不上就重建（窗口缩放会改 buffer 尺寸）
+    std::unique_ptr<GLFramebuffer>& thumb = m_thumbnails[pass.name];
+    if (!thumb || thumb->colorTex.width != tw || thumb->colorTex.height != th) {
+        thumb = std::make_unique<GLFramebuffer>();
+        if (!thumb->create(tw, th, GL_RGBA8)) {
+            thumb.reset();
+            return;
+        }
+    }
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, src->fbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, thumb->fbo);
+    glDisable(GL_SCISSOR_TEST);  // blit 受 draw framebuffer 的 scissor 影响
+    glBlitFramebuffer(0, 0, w, h, 0, 0, tw, th, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);  // 恢复默认，ImGui/SFML 需要 FBO 0
+}
+
 void ShadertoyEmulator::renderToScreen() {
     // 渲染到输出目标而不是直接画到窗口：截图和显示共用同一份内容，
     // 也避免直接读窗口的 back buffer（窗口最小化时它是 0×0）
@@ -1020,9 +1172,23 @@ void ShadertoyEmulator::renderToScreen() {
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
 
-    // 找到 Image 通道并渲染到屏幕
-    for (auto& pass : m_passes) {
-        if (pass->isImage) {
+    if (RenderPass* debug = debugViewPass()) {
+        // 调试视图：把那个 pass 的 buffer 直接贴过来。刻意不重跑它的 shader——
+        // buffer 是有状态的，重跑等于把这一帧的内容又算了一遍，看到的就不是现场了
+        GLFramebuffer* src = debug->getReadTarget();
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, src->fbo);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_outputTarget->fbo);
+        glDisable(GL_SCISSOR_TEST);  // blit 受 draw framebuffer 的 scissor 影响，ImGui 可能留下状态
+        // 源是浮点、输出目标是 8bit，这个转换由硬件做
+        glBlitFramebuffer(0, 0, src->colorTex.width, src->colorTex.height,
+                          0, 0, m_width, m_height,
+                          GL_COLOR_BUFFER_BIT, GL_LINEAR);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);  // 恢复默认，ImGui/SFML 需要 FBO 0
+    } else {
+        // 找到 Image 通道并渲染到屏幕
+        for (auto& pass : m_passes) {
+            if (!pass->isImage) continue;
+
             sf::Shader::bind(&pass->shader);
             // 这里给的是窗口尺寸而不是 pass 自己的：Image pass 不参与 resizeFramebuffers
             // 的尺寸更新，窗口缩放后它的 width/height 是过期的
@@ -1598,6 +1764,164 @@ void ShadertoyEmulator::renderImGui() {
     ImGui::SameLine(labelWidth);
     ImGui::Text("%d x %d", m_width, m_height);
 
+    ImGui::SeparatorText("Pixel");
+    ImGui::Checkbox("Probe", &m_showPixelProbe);
+
+    // 读的是画面上此刻显示的那份数据：看 buffer 时是原始浮点，负值和超过 1 的都还在；
+    // 看 Image 时是输出目标那份 8bit，读出来已经量化过
+    const sf::Vector2u winSize = m_window.getSize();
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    // 鼠标压在 ImGui 窗口上时读到的不是用户想看的那块画面，跳过
+    const bool overImage = m_showPixelProbe && winSize.x > 0 && winSize.y > 0
+        && !ImGui::GetIO().WantCaptureMouse
+        && mouse.x >= 0.0f && mouse.y >= 0.0f
+        && mouse.x < static_cast<float>(winSize.x) && mouse.y < static_cast<float>(winSize.y);
+
+    if (overImage) {
+        // 窗口可以缩放到和渲染分辨率不同的尺寸，按比例换算回纹理坐标。
+        // y 要翻过来：鼠标坐标原点在左上，GL 的在左下
+        const int x = std::clamp(
+            static_cast<int>(mouse.x / winSize.x * m_width), 0, m_width - 1);
+        const int y = std::clamp(
+            static_cast<int>((1.0f - mouse.y / winSize.y) * m_height), 0, m_height - 1);
+
+        // glReadPixels 是同步的，要等 GPU 把这一帧画完才拿得到值，每帧都读会一直
+        // 卡住管线（重负载 shader 上实测 7~12ms，帧预算才 16.7ms）。
+        // 鼠标一动马上读——位置变了值肯定也变；不动的时候降频，画面自己在动也追得上
+        const bool moved = (mouse.x != m_probeLastX || mouse.y != m_probeLastY);
+        if (moved || ++m_probeIdleFrames >= 15) {
+            m_probeIdleFrames = 0;
+            m_probeLastX = mouse.x;
+            m_probeLastY = mouse.y;
+
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, currentViewTarget()->fbo);
+            glReadPixels(x, y, 1, 1, GL_RGBA, GL_FLOAT, m_probePixel.data());
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);  // 恢复默认，ImGui/SFML 需要 FBO 0
+        }
+
+        ImGui::TextDisabled("At");
+        ImGui::SameLine(labelWidth);
+        ImGui::Text("%d, %d", x, y);
+
+        // 顺手把颜色画成一块：对着四个数在脑子里拼颜色太费劲。
+        // 超范围的分量按夹紧后的值显示，越界这件事交给下面标红的数字去说
+        ImGui::SameLine();
+        const ImVec2 swatchPos = ImGui::GetCursorScreenPos();
+        const float swatchSize = ImGui::GetTextLineHeight();
+        const ImVec2 swatchEnd(swatchPos.x + swatchSize, swatchPos.y + swatchSize);
+        const ImVec4 swatch(std::clamp(m_probePixel[0], 0.0f, 1.0f),
+                            std::clamp(m_probePixel[1], 0.0f, 1.0f),
+                            std::clamp(m_probePixel[2], 0.0f, 1.0f), 1.0f);
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
+        drawList->AddRectFilled(swatchPos, swatchEnd, ImGui::ColorConvertFloat4ToU32(swatch));
+        drawList->AddRect(swatchPos, swatchEnd, IM_COL32(130, 130, 130, 255));
+        ImGui::Dummy(ImVec2(swatchSize, swatchSize));  // 占位，让后面的布局知道这里有东西
+
+        // 逐个分量显示。越界（负值或超过 1）标红——调数值时找的往往就是这两种
+        static const char* const componentNames[4] = {"R", "G", "B", "A"};
+        for (int i = 0; i < 4; ++i) {
+            ImGui::TextDisabled("%s", componentNames[i]);
+            ImGui::SameLine(labelWidth);
+
+            const bool outOfRange = m_probePixel[i] < 0.0f || m_probePixel[i] > 1.0f;
+            if (outOfRange) {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.92f, 0.45f, 0.42f, 1.0f));
+            }
+            ImGui::Text("%.4f", m_probePixel[i]);
+            if (outOfRange) ImGui::PopStyleColor();
+        }
+    } else {
+        ImGui::TextDisabled("Point at the image to read a pixel");
+    }
+
+    ImGui::End();
+
+    // 调试视图的 pass 列表。单独开一个窗口：pass 一多，塞进 Controls 会把它撑得老长。
+    // 缩略图展开后窗口能长到屏幕外面去，限制个最大高度让它自己滚动
+    ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), ImVec2(FLT_MAX, 700.0f));
+    ImGui::SetNextWindowPos(ImVec2(345, 10), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowBgAlpha(0.85f);
+    if (ImGui::Begin("Passes", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        for (auto& pass : m_passes) {
+            if (pass->isSound) continue;  // 音频没有能看的画面
+
+            // 看 Image 就等于没开调试视图，其余 pass 得名字对上才算选中
+            const bool selected = pass->isImage ? m_debugViewPass.empty()
+                                                : (m_debugViewPass == pass->name);
+            // Image 的 width/height 不随窗口缩放更新，显示窗口的才对
+            const int w = pass->isImage ? m_width : pass->width;
+            const int h = pass->isImage ? m_height : pass->height;
+
+            const std::string label = pass->name + "   " + std::to_string(w) + "x"
+                + std::to_string(h) + "##" + pass->name;
+            if (ImGui::RadioButton(label.c_str(), selected)) {
+                m_debugViewPass = pass->isImage ? "" : pass->name;
+            }
+        }
+
+        // 名字打错时画面会照常显示 Image，不提示的话很容易以为调试视图没生效
+        if (!m_debugViewPass.empty() && !debugViewPass()) {
+            ImGui::TextColored(ImVec4(0.92f, 0.45f, 0.42f, 1.0f),
+                               "No pass named \"%s\"", m_debugViewPass.c_str());
+        }
+
+        // 当前看的这个 pass 的输入接了什么。排查"接错通道/漏接"比翻一遍 config 快得多
+        RenderPass* viewed = debugViewPass();
+        if (!viewed) {
+            // 没开调试视图时画面上是 Image
+            for (auto& pass : m_passes) {
+                if (pass->isImage) { viewed = pass.get(); break; }
+            }
+        }
+        if (viewed) {
+            // 默认收起：通道表只在排查"接错/漏接"时才看，平时白占四五行
+            const std::string header = "Inputs: " + viewed->name + "##inputs";
+            if (ImGui::CollapsingHeader(header.c_str())) {
+                bool anyInput = false;
+                for (int i = 0; i < 4; ++i) {
+                    const auto& channel = viewed->channels[i];
+                    if (!channel) continue;  // 没接的通道不占行
+                    anyInput = true;
+
+                    ImGui::TextDisabled("[%d] %s", i, channelSourceName(*channel).c_str());
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("%s/%s", filterName(channel->filter),
+                                        wrapName(channel->wrap));
+                }
+                if (!anyInput) ImGui::TextDisabled("(no inputs)");
+            }
+        }
+
+        // 缩略图默认关着：每个 buffer 每帧都要 blit 一次，不看时白花这份开销
+        ImGui::SeparatorText("Thumbnails");
+        ImGui::Checkbox("Show", &m_showThumbnails);
+        if (m_showThumbnails) {
+            int shown = 0;
+            for (auto& pass : m_passes) {
+                // 缩略图是给 buffer 看的。Image 的内容就是画面本身，抬头就能看，
+                // 而且它没有自己的 FBO，硬取会拿到空指针
+                if (pass->isImage || pass->isSound) continue;
+
+                updateThumbnail(*pass);
+
+                const auto it = m_thumbnails.find(pass->name);
+                if (it == m_thumbnails.end() || !it->second) continue;
+                const GLTexture& tex = it->second->colorTex;
+
+                // 两个一行：竖着排的话四五个 buffer 就把窗口拉到屏幕外面去了
+                if (shown % 2 != 0) ImGui::SameLine();
+                ImGui::BeginGroup();
+                ImGui::TextDisabled("%s", pass->name.c_str());
+                // ImGui-SFML 的 ImTextureID 就是 GL 纹理名，直接递给原生 Image 接口。
+                // uv 的 y 对调：GL 纹理原点在左下，ImGui 的在左上，不换会上下颠倒
+                ImGui::Image(static_cast<ImTextureID>(tex.id),
+                             ImVec2(static_cast<float>(tex.width), static_cast<float>(tex.height)),
+                             ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
+                ImGui::EndGroup();
+                shown++;
+            }
+        }
+    }
     ImGui::End();
 }
 

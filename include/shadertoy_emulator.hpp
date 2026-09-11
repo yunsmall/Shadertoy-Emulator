@@ -105,6 +105,12 @@ private:
     void renderImGui();
     void resetShader();
 
+    // 调试视图
+    RenderPass* findPass(const std::string& name);  // 找不到返回 nullptr
+    RenderPass* debugViewPass();        // 当前要在画面上顶替 Image 的 pass，没开或名字无效就是 nullptr
+    GLFramebuffer* currentViewTarget(); // 画面上此刻显示的是哪个 FBO，像素探针按它取原始值
+    void updateThumbnail(RenderPass& pass);
+
     // 三种运行模式的入口
     void runWindow();
     void runImages();
@@ -112,6 +118,7 @@ private:
 
     // 导出辅助
     void captureFrame(int frameIndex);
+    void captureBuffer(RenderPass& pass, int frameIndex);
     void readOutputPixels(std::vector<uint8_t>& pixels);  // 读输出目标，bottom-up RGBA8
     void writeAudioDump();
     void finishExport(const std::string& label, int renderedFrames,
@@ -127,6 +134,9 @@ private:
 
     // GUI 相关
     bool m_enableGui = false;
+    // 调试视图：非空时画面显示这个 pass 的 buffer，而不是 Image pass。
+    // 存名字不存指针——resetShader() 会重建所有 pass，原来的指针会悬空
+    std::string m_debugViewPass;
     bool m_paused = false;
     bool m_stepFrame = false;
     float m_pausedTime = 0.0f;
@@ -161,6 +171,21 @@ private:
 
     // 外部纹理缓存 (SFML 纹理用于文件加载，转换为 GLTexture)
     std::map<std::string, std::unique_ptr<GLTexture>> m_textureCache;
+
+    // 缩略图：勾上才刷新，平时一点 GPU 开销都不花。
+    // 每个 buffer 一张自己的 FBO。ImGui-SFML 的 ImTextureID 就是 GL 纹理名，
+    // 直接把纹理递过去就行，不必绕道 sf::Texture。
+    // GL 资源声明在窗口/上下文后面，才能保证析构时 GL 还活着
+    bool m_showThumbnails = false;
+    std::map<std::string, std::unique_ptr<GLFramebuffer>> m_thumbnails;
+
+    // 像素探针。glReadPixels 是同步的，每帧读一次要等 GPU 画完（实测重负载
+    // shader 上要 7~12ms），所以鼠标不动时降频读，值缓存在这里
+    bool m_showPixelProbe = true;
+    std::array<float, 4> m_probePixel = {0.0f, 0.0f, 0.0f, 0.0f};
+    float m_probeLastX = -1.0f;
+    float m_probeLastY = -1.0f;
+    int m_probeIdleFrames = 0;
 
     // 采样器缓存，下标 = filter * 3 + wrap（两者各只有 3 种取值，直接查表，比 map 更快）
     // 采样参数挂在 sampler object 上，就不必每帧改纹理自身的状态，

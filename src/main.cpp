@@ -22,6 +22,9 @@ int main(int argc, char* argv[]) {
         ("video", "Export a video to this path. Requires --duration", cxxopts::value<std::string>())
         ("duration", "Length of the exported video in seconds (required with --video)", cxxopts::value<int>())
         ("dump-audio", "Also write the Sound pass output to a WAV file", cxxopts::value<std::string>())
+        ("debug-view", "Show this pass's buffer instead of the Image pass, e.g. BufferA", cxxopts::value<std::string>())
+        ("dump-buffers", "Also write these buffer passes to <output-dir>/buffers/<name>/ (comma separated, or 'all')", cxxopts::value<std::string>())
+        ("dump-buffer-gain", "Multiplier applied before clamping buffer values to 0..1 (default: 1)", cxxopts::value<float>()->default_value("1"))
         ("builtin-preprocessor", "Use built-in GLSL preprocessor instead of external (glslangValidator)")
         ("input", "Shader file or config.json path (positional)", cxxopts::value<std::string>())
         ("help", "Print usage");
@@ -72,6 +75,34 @@ int main(int argc, char* argv[]) {
         }
         if (result.count("dump-audio") > 0) {
             runOptions.audioDumpPath = result["dump-audio"].as<std::string>();
+        }
+        if (result.count("debug-view") > 0) {
+            runOptions.debugViewPass = result["debug-view"].as<std::string>();
+        }
+        if (result.count("dump-buffers") > 0) {
+            // 逗号分隔的名字列表。允许写成 "BufferA, BufferC"，顺手把空白去掉
+            const std::string names = result["dump-buffers"].as<std::string>();
+            size_t pos = 0;
+            while (pos < names.size()) {
+                const size_t comma = names.find(',', pos);
+                const std::string item = names.substr(
+                    pos, comma == std::string::npos ? std::string::npos : comma - pos);
+
+                const size_t begin = item.find_first_not_of(" \t");
+                if (begin != std::string::npos) {
+                    runOptions.dumpBuffers.push_back(
+                        item.substr(begin, item.find_last_not_of(" \t") - begin + 1));
+                }
+                if (comma == std::string::npos) break;
+                pos = comma + 1;
+            }
+            runOptions.dumpBufferGain = result["dump-buffer-gain"].as<float>();
+        }
+
+        // 视频模式不导调试帧：调试看的是中间结果，图片序列已经够用了
+        if (result.count("dump-buffers") > 0 && result.count("images") == 0) {
+            std::cerr << "--dump-buffers only applies to --images mode.\n";
+            return 1;
         }
 
         // 参数用错模式时报错而不是默默忽略，否则很容易以为生效了
