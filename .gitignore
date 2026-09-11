@@ -12,3 +12,4 @@ CLAUDE.md
 /.cache
 /vcpkg
 /vcpkg_cache
+__pycache__/
