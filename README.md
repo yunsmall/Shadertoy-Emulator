@@ -30,9 +30,18 @@ A Shadertoy shader emulator based on SFML 3, allowing you to run Shadertoy shade
 
 ## Building
 
-**Most people don't need to build anything.** Every release ships a prebuilt
-Windows zip on the [Releases page](https://github.com/yunsmall/Shadertoy-Emulator/releases):
-download it, unpack it, run `ShadertoyEmulator.exe`.
+**Most people don't need to build anything.** Every release ships prebuilt
+binaries on the [Releases page](https://github.com/yunsmall/Shadertoy-Emulator/releases):
+
+| Platform | File | How to run |
+|---|---|---|
+| Windows | `ShadertoyEmulator-<version>-win64.zip` | Unpack and run `ShadertoyEmulator.exe` |
+| Linux | `shadertoy-emulator_<version>_amd64.deb` | `sudo apt install ./shadertoy-emulator_*.deb` |
+
+The Windows zip has the VC++ runtime bundled in, so it runs as-is. On Linux the
+binary goes to `/usr/local/bin` — just run `ShadertoyEmulator`. The package
+declares its ffmpeg and X11 runtime dependencies, so `apt` pulls them in, which
+makes it Debian/Ubuntu only (glibc 2.39+, i.e. Ubuntu 24.04, Debian 13 or newer).
 
 ### From source
 

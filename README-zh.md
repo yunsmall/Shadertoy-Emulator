@@ -31,8 +31,16 @@
 ## 构建
 
 **大部分人不需要构建。** 每次发版都会在
-[Releases 页面](https://github.com/yunsmall/Shadertoy-Emulator/releases)附上编好的
-Windows 压缩包：下载、解压、运行 `ShadertoyEmulator.exe` 即可。
+[Releases 页面](https://github.com/yunsmall/Shadertoy-Emulator/releases)附上两个编好的包：
+
+| 平台 | 文件 | 用法 |
+|---|---|---|
+| Windows | `ShadertoyEmulator-<版本>-win64.zip` | 解压，运行 `ShadertoyEmulator.exe` |
+| Linux | `shadertoy-emulator_<版本>_amd64.deb` | `sudo apt install ./shadertoy-emulator_*.deb` |
+
+Windows 包里连 VC++ 运行库都放进去了，解压就能跑。Linux 装完直接执行 `ShadertoyEmulator`
+即可，二进制在 `/usr/local/bin`。deb 里写好了对 ffmpeg 等运行库的依赖，`apt` 会一并装上，
+所以只适用于 Debian / Ubuntu 系（glibc 2.39 以上，即 Ubuntu 24.04、Debian 13 或更新的版本）。
 
 ### 从源码构建
 

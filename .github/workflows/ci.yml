@@ -60,6 +60,41 @@ jobs:
             env LIBGL_ALWAYS_SOFTWARE=1 \
             python3 tests/run_tests.py --exe build/ShadertoyEmulator
 
+      # 每次构建都打一份：打包这步本身也得被验证，不然要等第一次发 tag 才发现它坏了。
+      # always() 是为了测试挂了也能把产物传上去——那份二进制才复现得出问题
+      - name: 打包
+        if: always()
+        run: |
+          # 放在这里而不是「系统依赖」那步：那步是 bash -e，fpm 万一装不上会把测试也连累掉。
+          # apt 源里没有 fpm，只能走 rubygems
+          sudo gem install fpm --no-document
+
+          mkdir -p debroot/usr/local/bin debroot/usr/local/share/shadertoy-emulator
+          cp build/ShadertoyEmulator debroot/usr/local/bin/
+          cp README.md debroot/usr/local/share/shadertoy-emulator/
+          # 就地跑一次：缺哪个库这里就会炸，别把跑不起来的包发出去
+          debroot/usr/local/bin/ShadertoyEmulator --help > /dev/null
+
+          # deb 的版本号必须以数字开头，非 tag 构建时 ref_name 是分支名，拿 0.0.0 顶上
+          version="${GITHUB_REF_NAME#v}"
+          [[ "$version" =~ ^[0-9] ]] || version="0.0.0"
+          # ffmpeg 走的是发行版的动态库，依赖得写进包元信息里，用户 apt install 时
+          # 才会连它那一串运行库一起装上
+          fpm -s dir -t deb -n shadertoy-emulator -v "$version" \
+            --depends libavcodec60 --depends libavformat60 --depends libavutil58 \
+            --depends libswscale7 --depends libswresample4 \
+            --depends libx11-6 --depends libxrandr2 --depends libxcursor1 \
+            --depends libxi6 --depends libgl1 --depends libudev1 \
+            -C debroot usr
+
+      # Actions 里也能下，但下载要登录 GitHub 账号；免登录的正式下载走下面的 Release
+      - name: 上传构建产物
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ShadertoyEmulator-linux
+          path: shadertoy-emulator_*.deb
+
       # 存/取拆开是为了让保存无条件执行。默认的缓存 action 只在 job 成功时才存，
       # 会变成「测试挂了 → 缓存没存 → 下次又把 ffmpeg 从头编一遍」的死循环
       - name: 保存 vcpkg 二进制缓存
@@ -71,10 +106,6 @@ jobs:
 
   windows:
     runs-on: windows-2022
-    # 发 Release 要写权限。GITHUB_TOKEN 默认是只读的，另外仓库设置里也得允许读写，
-    # 不然这行照样不生效（Settings → Actions → General → Workflow permissions）
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -136,7 +167,6 @@ jobs:
           # 就地跑一次：缺哪个 DLL 这里就会炸，别把跑不起来的包发出去
           & ./dist/ShadertoyEmulator.exe --help > $null
           if ($LASTEXITCODE -ne 0) { throw "打包出来的 exe 跑不起来" }
-          Copy-Item -Recurse shaders dist/shaders
           Copy-Item README.md dist/
           Compress-Archive -Path dist/* -DestinationPath "ShadertoyEmulator-${{ github.ref_name }}-win64.zip"
 
@@ -148,13 +178,6 @@ jobs:
           name: ShadertoyEmulator-win64
           path: ShadertoyEmulator-*-win64.zip
 
-      # 必须 success()：不加的话光看 tag 就会发，测试没过的包也会挂到 Release 上
-      - name: 发布
-        if: startsWith(github.ref, 'refs/tags/v') && success()
-        uses: softprops/action-gh-release@v2
-        with:
-          files: ShadertoyEmulator-*-win64.zip
-
       # 同 linux：无条件保存，否则 Windows job 一失败，ffmpeg 就得永远重编
       - name: 保存 vcpkg 二进制缓存
         if: always() && steps.vcpkg-cache.outputs.cache-hit != 'true'
@@ -162,3 +185,26 @@ jobs:
         with:
           path: vcpkg_cache
           key: vcpkg-bin-windows-${{ env.VCPKG_COMMIT }}
+
+  # 两个平台都构建出来才发版，免得出现「Release 上只有一个平台的包」这种半拉子状态。
+  # 发布集中到这里，构建那俩 job 就不用各自拿写权限了
+  release:
+    needs: [linux, windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    # 发 Release 要写权限。GITHUB_TOKEN 默认是只读的，另外仓库设置里也得允许读写，
+    # 不然这行照样不生效（Settings → Actions → General → Workflow permissions）
+    permissions:
+      contents: write
+    steps:
+      - name: 取两个平台的产物
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: ShadertoyEmulator-*
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/ShadertoyEmulator-win64/*.zip
+            artifacts/ShadertoyEmulator-linux/*.deb
