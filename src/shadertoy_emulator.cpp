@@ -46,7 +46,12 @@ ShadertoyEmulator::ShadertoyEmulator(const ShaderConfig& config, const RunOption
     if (!gladLoadGL()) {
         throw std::runtime_error("Failed to initialize GLAD");
     }
-    std::cout << "OpenGL " << GLVersion.major << "." << GLVersion.minor << std::endl;
+    // 带上 renderer/vendor：软渲染和硬件渲染的行为能差很远，出问题时这两行是第一条线索
+    const char* renderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
+    const char* vendor = reinterpret_cast<const char*>(glGetString(GL_VENDOR));
+    std::cout << "OpenGL " << GLVersion.major << "." << GLVersion.minor << " ("
+              << (renderer ? renderer : "?") << ", " << (vendor ? vendor : "?") << ")"
+              << std::endl;
 
     // 初始化 OpenGL 顶点数据
     initQuad();
