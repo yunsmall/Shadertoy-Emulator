@@ -420,6 +420,7 @@ void ShadertoyEmulator::runWindow() {
 
 void ShadertoyEmulator::runImages() {
     const FrameRange& range = m_options.imageRange;
+    const auto exportStart = std::chrono::steady_clock::now();
 
     std::error_code ec;
     std::filesystem::create_directories(m_options.imageDir, ec);
@@ -446,12 +447,23 @@ void ShadertoyEmulator::runImages() {
 
     writeAudioDump();
 
-    std::cout << "Exported " << saved << " frames." << std::endl;
+    // 耗时由程序自己报：外部的 time 在 Windows 上量不到原生进程，给的数不能用
+    const double elapsed = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - exportStart).count();
+    std::cout << "Exported " << saved << " frames in " << std::fixed << std::setprecision(2)
+              << elapsed << "s";
+    // 按实际渲染的帧数算。--images 0:300:2 虽然只存 150 张，但 300 帧一帧不少地渲染了，
+    // 拿存盘张数去除会把每帧成本算高一倍
+    if (range.stop > 0) {
+        std::cout << " (" << (elapsed * 1000.0 / range.stop) << " ms/frame)";
+    }
+    std::cout << std::endl;
 }
 
 void ShadertoyEmulator::runVideo() {
     const int fps = static_cast<int>(m_options.fps + 0.5f);
     const int totalFrames = m_options.videoSeconds * fps;
+    const auto exportStart = std::chrono::steady_clock::now();
 
     const std::filesystem::path parent = m_options.videoPath.parent_path();
     if (!parent.empty()) {
@@ -490,7 +502,15 @@ void ShadertoyEmulator::runVideo() {
 
     writeAudioDump();  // 只有用户另外要 WAV 时才会真写
 
-    std::cout << "Exported video." << std::endl;
+    // 耗时由程序自己报：外部的 time 在 Windows 上量不到原生进程，给的数不能用
+    const double elapsed = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - exportStart).count();
+    std::cout << "Exported video: " << totalFrames << " frames in " << std::fixed
+              << std::setprecision(2) << elapsed << "s";
+    if (totalFrames > 0) {
+        std::cout << " (" << (elapsed * 1000.0 / totalFrames) << " ms/frame)";
+    }
+    std::cout << std::endl;
 }
 
 void ShadertoyEmulator::readOutputPixels(std::vector<uint8_t>& pixels) {
