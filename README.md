@@ -171,10 +171,14 @@ ShadertoyEmulator config.json
 | `--debug-view <pass>` | Show that buffer pass instead of the Image pass, e.g. `BufferA` (works in window and image modes) |
 | `--dump-buffers <list\|all>` | **Image mode**: also export those buffer passes to `<dir>/buffers/<name>/`; comma separated, or `all` |
 | `--dump-buffer-gain <n>` | Multiplier applied to buffer values before clamping to 0..1 when dumping (default: 1) |
+| `--export <dir>` | Write a self-contained copy of this shader into that directory, then exit: no window, no rendering. Every glsl gets its `#include` expanded and nothing else touched, textures and the config JSON come along, and every path in the JSON becomes `./name` (`$schema` is dropped). Each resulting file can be pasted straight into the matching Shadertoy tab (`common.glsl` → Common, each pass → its own) |
+| `--clean-export` | With `--export`: wipe the output directory first, so files left over from an earlier run do not stick around. Refuses when the input file lives in that directory |
+| `--reload-at-frame <n>` | Reload the config once when this frame is reached, same as clicking Reload Config in the GUI. For testing |
 | `--builtin-preprocessor` | Use built-in GLSL preprocessor |
 
 The three modes are mutually exclusive: without `--images` or `--video` you get window mode.
 Export modes have no window, no ImGui and no keyboard/mouse input, and exit when done.
+`--export` is a standalone operation — it renders nothing, so it cannot be combined with `--images` or `--video`.
 
 ## GLSL Preprocessor
 
@@ -429,9 +433,11 @@ This project only provides an emulator to run these shaders locally. All shader 
 
 With `--gui`, the ImGui overlay has:
 
-- **Controls** — Pause / Next Frame / Reset, timing, and a pixel probe: point at the image to read
-  that pixel's RGBA, shown next to a color swatch. Components outside 0..1 are marked red.
-  Uncheck `Probe` to skip the read entirely.
+- **Controls** — Pause / Next Frame / Reset / Reload Config, timing, and a pixel probe: point at the
+  image to read that pixel's RGBA, shown next to a color swatch. Components outside 0..1 are marked
+  red. Uncheck `Probe` to skip the read entirely. `Reload Config` re-reads the config and everything
+  it references, so a shader edit does not need a restart; if it does not compile, the window keeps
+  running on the shaders it already has and the error goes to the console.
 - **Passes** — click a pass to display its buffer instead of the Image pass. `Inputs: <pass>`
   unfolds the channel bindings. `Thumbnails` previews every buffer (off by default; each one
   costs a blit per frame).

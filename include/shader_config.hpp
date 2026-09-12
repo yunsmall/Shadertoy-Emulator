@@ -22,6 +22,8 @@ public:
     const std::string& getCommonPath() const { return m_commonPath; }
     const std::vector<PassConfig>& getPasses() const { return m_passes; }
     const std::filesystem::path& getBasePath() const { return m_basePath; }
+    // 这份配置是从哪个文件读来的，热重载要重读的就是它（单 shader 模式下是那个 glsl）
+    const std::filesystem::path& getSourcePath() const { return m_sourcePath; }
     bool hasGui() const { return m_gui; }
 
     // 设置覆盖
@@ -40,5 +42,6 @@ private:
     bool m_gui = false;        // 默认不显示 GUI
     std::string m_commonPath;  // 相对路径
     std::vector<PassConfig> m_passes;
-    std::filesystem::path m_basePath;  // JSON文件所在目录，用于解析相对路径
+    std::filesystem::path m_basePath;    // JSON文件所在目录，用于解析相对路径
+    std::filesystem::path m_sourcePath;  // 配置本身的路径，热重载时重读它
 };

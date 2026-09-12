@@ -51,5 +51,9 @@ struct RunOptions {
     // 窗口模式下 ImGui 里也能随时改，这里给的是初始值，顺便让离屏模式也能用上
     std::string debugViewPass;
 
+    // 跑到这一帧时热重载一次配置，等价于在 GUI 上点一下那个按钮。给测试和调试用，
+    // 三种运行模式都走得到；-1 表示不触发
+    int reloadAtFrame = -1;
+
     bool isOffscreen() const { return mode != RunMode::Window; }
 };

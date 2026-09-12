@@ -46,6 +46,9 @@ private:
     void checkAndGenerateSound();
 
     void resetShader();
+    // 重读配置文件并重建所有通道。ImGui 里点按钮只置 m_reloadConfigPending，
+    // 真正干活的在这儿——重建要碰 GL 和 FBO，不能在 ImGui 的回调里做
+    void reloadConfig();
 
     // 三种运行模式的入口
     void runWindow();
@@ -80,10 +83,16 @@ private:
     bool m_enableGui = false;
     std::unique_ptr<DebugOverlay> m_overlay;
     // 调试视图：非空时画面显示这个 pass 的 buffer，而不是 Image pass。
-    // 存名字不存指针——resetShader() 会重建所有 pass，原来的指针会悬空
+    // 存名字不存指针——重载配置会重建所有 pass，原来的指针会悬空
     std::string m_debugViewPass;
     bool m_paused = false;
     bool m_stepFrame = false;
+
+    // 热重载的请求与结果。失败时窗口照常跑、原有 shader 原样留着，具体错在哪看控制台，
+    // GUI 上只提示成没成
+    bool m_reloadConfigPending = false;
+    enum class ReloadStatus { Never, Ok, Failed };
+    ReloadStatus m_reloadStatus = ReloadStatus::Never;
     float m_pausedTime = 0.0f;
     float m_pausedTimeDelta = 0.0f;  // 暂停时保存的 iTimeDelta
     float m_currentFps = 0.0f;

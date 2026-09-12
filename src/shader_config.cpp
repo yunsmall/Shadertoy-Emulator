@@ -63,6 +63,7 @@ bool ShaderConfig::load(const std::string& jsonPath) {
     }
 
     // 保存基准路径
+    m_sourcePath = jsonPath;
     m_basePath = std::filesystem::path(jsonPath).parent_path();
 
     try {
@@ -189,6 +190,7 @@ ShaderConfig ShaderConfig::fromSingleShader(const std::string& shaderPath, int w
     config.m_name = "Single Shader";
     config.m_width = width;
     config.m_height = height;
+    config.m_sourcePath = shaderPath;
     config.m_basePath = std::filesystem::path(shaderPath).parent_path();
 
     PassConfig imagePass;

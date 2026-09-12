@@ -1,0 +1,27 @@
+{
+  "$schema": "../config.schema.json",
+  "name": "export 测试",
+  "common": "common.glsl",
+  "passes": [
+    {
+      "name": "BufferA",
+      "shader": "buffera.glsl"
+    },
+    {
+      "name": "Image",
+      "shader": "image.glsl",
+      "channels": {
+        "0": {
+          "type": "texture",
+          "source": "noise.png",
+          "filter": "nearest",
+          "wrap": "clamp"
+        },
+        "1": {
+          "type": "buffer",
+          "source": "BufferA"
+        }
+      }
+    }
+  ]
+}

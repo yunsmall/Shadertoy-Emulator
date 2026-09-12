@@ -26,8 +26,14 @@ public:
     void setMode(Mode mode) { m_mode = mode; }
     Mode getMode() const { return m_mode; }
 
+    // 展开 #include 时补一句 #line 把行号拉回本文件。展开结果直接喂编译器时（渲染
+    // 时的做法）这能让报错指回源文件；导出成独立文件时那份文本自己就是要给人看的
+    // 成品，补了反而让报错行号和文件里数出来的对不上
+    void setEmitLineDirectives(bool emit) { m_emitLineDirectives = emit; }
+
 private:
     Mode m_mode;
+    bool m_emitLineDirectives = true;
     static Mode s_defaultMode;
 
     // m_mode 为 External 只代表用户的意图，PATH 里没有 glslangValidator 时还得退回内置

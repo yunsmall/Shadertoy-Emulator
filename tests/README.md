@@ -34,6 +34,9 @@ python tests/run_tests.py --only alpha              # 只跑目录名含 alpha �
 | `sound/` | Sound pass 左右声道各几个已知频率，`--dump-audio` 导出后校验频率、幅度和声道隔离 |
 | `sound_common/` | Sound 引用 common 里的函数，公共代码只能展开一次（用 `sound/` 的场景） |
 | `preprocessor/` | 宏、参数宏、条件编译、`#undef`、`#include`，内置与外部预处理器结果必须一致（外部需要 `glslangValidator`） |
+| `export/` | `--export`：展开 `#include`、路径改成 `./`、`$schema` 删掉、被 include 的不单独输出，且导出的目录原样再跑一次，画面与原来逐像素一致；`--clean-export` 清空目录，但源文件在该目录里时拒绝 |
+| `badshader/` | shader 编译不过时立刻退出（退出码非 0），不接着渲染或导出 |
+| `reload/` | 热重载（`--reload-at-frame`，等价于 GUI 上的按钮）：跑到一半换 shader 能生效；换成语法错的则保留原有 shader、程序照常跑完 |
 | `zeroinit/` | 未初始化的变量被补成 0（内置类型、多声明、已有初值的不动），struct 成员和 uniform 不能被误加初值 |
 | `video/` | 视频导出的帧数、时长和音轨，用 `ffprobe` 核对，并确认音频时长跟着视频走而不是按每帧 0.5 秒累积（用 `sound/` 的场景） |
 

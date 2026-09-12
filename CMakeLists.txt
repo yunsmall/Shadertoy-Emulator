@@ -34,6 +34,7 @@ add_executable(${PROJECT_NAME}
     src/glsl_translator.cpp
     src/debug_overlay.cpp
     src/video_writer.cpp
+    src/shader_exporter.cpp
 )
 target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_SOURCE_DIR}/include ${FFMPEG_INCLUDE_DIRS})
 target_link_libraries(${PROJECT_NAME} PRIVATE

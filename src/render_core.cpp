@@ -88,7 +88,11 @@ void RenderCore::init(int width, int height) {
 
     initKeyboardTexture();
     loadCommonCode();
-    initPasses();
+    // 有画面通道没加载起来就直接掐掉。具体是哪个通道、什么错，buildPasses 里报过了
+    if (!buildPasses(m_config, m_passSet)) {
+        throw std::runtime_error("Failed to initialize render passes");
+    }
+    computeMustRunPasses();
 }
 
 void RenderCore::initQuad() {
@@ -126,8 +130,12 @@ bool RenderCore::loadCommonCode() {
     return true;
 }
 
-void RenderCore::initPasses() {
-    for (const auto& passConfig : m_config.getPasses()) {
+bool RenderCore::buildPasses(const ShaderConfig& config, PassSet& out) {
+    // 只要有画面通道没起来就是 false：跳过的通道被别的通道采样时拿到的是没渲染过的
+    // 空纹理，画面是错的，而且错得看不出来
+    bool ok = true;
+
+    for (const auto& passConfig : config.getPasses()) {
         auto pass = std::make_unique<RenderPass>();
         pass->name = passConfig.name;
         pass->channels = passConfig.channels;
@@ -153,12 +161,12 @@ void RenderCore::initPasses() {
             }
             // 编译不过就当没这个 pass。留着的话每帧都会去跑一个没编译的 shader，
             // 读回采样的缓冲也还是空的，往空指针里写就是段错误
-            if (!initSoundPass(*pass)) {
+            if (!initSoundPass(*pass, config)) {
                 continue;
             }
-            m_soundPass = pass.get();
-            m_passMap[pass->name] = pass.get();
-            m_passes.push_back(std::move(pass));
+            out.soundPass = pass.get();
+            out.byName[pass->name] = pass.get();
+            out.passes.push_back(std::move(pass));
             continue;
         }
 
@@ -167,6 +175,7 @@ void RenderCore::initPasses() {
             pass->framebuffer = std::make_unique<GLFramebuffer>();
             if (!pass->framebuffer->create(pass->width, pass->height)) {
                 std::cerr << "Failed to create FBO for " << pass->name << std::endl;
+                ok = false;
                 continue;
             }
 
@@ -174,13 +183,15 @@ void RenderCore::initPasses() {
                 pass->framebufferAlt = std::make_unique<GLFramebuffer>();
                 if (!pass->framebufferAlt->create(pass->width, pass->height)) {
                     std::cerr << "Failed to create alternate FBO for " << pass->name << std::endl;
+                    ok = false;
                     continue;
                 }
             }
         }
 
         // 加载 shader
-        if (!loadShader(*pass, passConfig)) {
+        if (!loadShader(*pass, passConfig, config.getBasePath())) {
+            ok = false;
             continue;
         }
 
@@ -189,14 +200,14 @@ void RenderCore::initPasses() {
                   << (pass->useDoubleBuffer ? " [double buffer]" : "")
                   << (pass->isImage ? " [image]" : "") << std::endl;
 
-        m_passMap[pass->name] = pass.get();
-        m_passes.push_back(std::move(pass));
+        out.byName[pass->name] = pass.get();
+        out.passes.push_back(std::move(pass));
     }
 
     // 没有 Image 通道就什么都不显示，导出也是一片黑。而名字拼错（比如写成小写 image）
     // 会被当成 Buffer 悄悄收下，这里点一句，省得对着黑屏排查
     bool hasImage = false;
-    for (const auto& pass : m_passes) {
+    for (const auto& pass : m_passSet.passes) {
         if (pass->isImage) {
             hasImage = true;
             break;
@@ -207,11 +218,27 @@ void RenderCore::initPasses() {
                      "or exported (pass names are case-sensitive)" << std::endl;
     }
 
-    computeMustRunPasses();
+    return ok;
 }
 
-bool RenderCore::loadShader(RenderPass& pass, const PassConfig& config) {
-    std::filesystem::path fullPath = m_config.getBasePath() / config.shaderPath;
+bool RenderCore::rebuild() {
+    // 新的整套先建在别处：中途失败时 fresh 里的半成品跟着作用域析构，FBO 一起还回去，
+    // 正在跑的那套完全没被碰过
+    PassSet fresh;
+    if (!buildPasses(m_config, fresh)) {
+        return false;
+    }
+
+    m_passSet = std::move(fresh);
+    // 依赖分析里存的是 RenderPass 指针，换了一套之后必须重算
+    computeMustRunPasses();
+    std::cout << "Rebuilt passes: " << m_passSet.passes.size() << std::endl;
+    return true;
+}
+
+bool RenderCore::loadShader(RenderPass& pass, const PassConfig& config,
+                            const std::filesystem::path& basePath) {
+    std::filesystem::path fullPath = basePath / config.shaderPath;
 
     // 读取 shader 文件
     std::ifstream file(fullPath);
@@ -234,7 +261,7 @@ bool RenderCore::loadShader(RenderPass& pass, const PassConfig& config) {
     GlslPreprocessor preprocessor;
 
     // 统一预处理合并后的代码
-    std::string processedCode = preprocessor.process(combinedCode, m_config.getBasePath());
+    std::string processedCode = preprocessor.process(combinedCode, basePath);
     if (processedCode.empty()) {
         std::cerr << "Shader preprocessing failed for " << fullPath << std::endl;
         return false;
@@ -331,7 +358,7 @@ void RenderCore::resize(int width, int height) {
         }
     }
 
-    for (auto& pass : m_passes) {
+    for (auto& pass : m_passSet.passes) {
         // 只调整使用窗口分辨率的 Buffer pass
         if (!pass->isImage && pass->useWindowResolution) {
             pass->width = m_width;
@@ -406,7 +433,7 @@ void RenderCore::updateKeyboard(const std::array<bool, 256>& keys) {
 
 void RenderCore::renderBufferPasses(const FrameState& frame, bool intermediate) {
     // 渲染所有 Buffer pass（非 Image 非 Sound）
-    for (auto& pass : m_passes) {
+    for (auto& pass : m_passSet.passes) {
         if (pass->isImage || pass->isSound) continue;
         // 跳帧模式的中间帧只走状态链条上的通道。无状态的这一帧算出来也没人看：
         // 下一个目标帧会把它整个重算一遍
@@ -430,13 +457,13 @@ void RenderCore::computeMustRunPasses() {
         std::vector<RenderPass*>& deps = reads[reader];
         for (auto& channel : reader->channels) {
             if (!channel || channel->type != ChannelInput::Type::Buffer) continue;
-            auto it = m_passMap.find(channel->source);
-            if (it == m_passMap.end() || it->second->isImage) continue;
+            auto it = m_passSet.byName.find(channel->source);
+            if (it == m_passSet.byName.end() || it->second->isImage) continue;
             deps.push_back(it->second);
         }
     };
     // Image 不用管：它只在目标帧渲染，那时所有 buffer 都是新鲜的
-    for (auto& pass : m_passes) {
+    for (auto& pass : m_passSet.passes) {
         if (!pass->isImage) addReader(pass.get());
     }
 
@@ -458,7 +485,7 @@ void RenderCore::computeMustRunPasses() {
 
     m_mustRunEveryFrame.clear();
     std::vector<RenderPass*> pending;
-    for (auto& pass : m_passes) {
+    for (auto& pass : m_passSet.passes) {
         if (pass->isImage || pass->isSound) continue;
         if (reachesSelf(pass.get())) {
             m_mustRunEveryFrame.insert(pass.get());
@@ -468,8 +495,8 @@ void RenderCore::computeMustRunPasses() {
 
     // Sound 每帧都要生成采样，它读的 buffer 也得每帧是新鲜的。它自己不占 buffer 的
     // 名额（不归 renderBufferPasses 管），只当传播的起点
-    if (m_soundPass) {
-        for (RenderPass* dep : reads[m_soundPass]) {
+    if (m_passSet.soundPass) {
+        for (RenderPass* dep : reads[m_passSet.soundPass]) {
             if (m_mustRunEveryFrame.insert(dep).second) pending.push_back(dep);
         }
     }
@@ -488,8 +515,8 @@ GLTexture* RenderCore::getChannelTexture(const ChannelInput& input) {
     if (input.type == ChannelInput::Type::Keyboard) {
         return m_keyboardTexture.get();
     } else if (input.type == ChannelInput::Type::Buffer) {
-        auto it = m_passMap.find(input.source);
-        if (it != m_passMap.end()) {
+        auto it = m_passSet.byName.find(input.source);
+        if (it != m_passSet.byName.end()) {
             RenderPass* sourcePass = it->second;
             GLFramebuffer* fb = sourcePass->getReadTarget();
             if (fb) {
@@ -613,12 +640,12 @@ void RenderCore::renderPass(RenderPass& pass, const FrameState& frame) {
 
 // 按名字找 pass，调试视图和 --dump-buffers 都靠它把命令行写的名字对上实际场景
 RenderPass* RenderCore::findPass(const std::string& name) {
-    auto it = m_passMap.find(name);
-    return it == m_passMap.end() ? nullptr : it->second;
+    auto it = m_passSet.byName.find(name);
+    return it == m_passSet.byName.end() ? nullptr : it->second;
 }
 
 RenderPass* RenderCore::imagePass() {
-    for (auto& pass : m_passes) {
+    for (auto& pass : m_passSet.passes) {
         if (pass->isImage) return pass.get();
     }
     return nullptr;
@@ -738,7 +765,7 @@ std::string RenderCore::wrapSoundShader(const std::string& processedCode) {
     return shader.str();
 }
 
-bool RenderCore::initSoundPass(RenderPass& pass) {
+bool RenderCore::initSoundPass(RenderPass& pass, const ShaderConfig& config) {
     // 一批样本渲染成 batchSamples x 1 的纹理，宽度不能超过 GL_MAX_TEXTURE_SIZE，
     // 否则 FBO 建不出来（WSL 的 d3d12 后端上限只有 16384，撑不下 22050）
     GLint maxTextureSize = 0;
@@ -756,9 +783,9 @@ bool RenderCore::initSoundPass(RenderPass& pass) {
 
     // 加载 shader
     std::filesystem::path fullPath;
-    for (const auto& pc : m_config.getPasses()) {
+    for (const auto& pc : config.getPasses()) {
         if (pc.name == pass.name) {
-            fullPath = m_config.getBasePath() / pc.shaderPath;
+            fullPath = config.getBasePath() / pc.shaderPath;
             break;
         }
     }
@@ -783,7 +810,7 @@ bool RenderCore::initSoundPass(RenderPass& pass) {
     }
 
     GlslPreprocessor preprocessor;
-    std::string processedCode = preprocessor.process(combinedCode, m_config.getBasePath());
+    std::string processedCode = preprocessor.process(combinedCode, config.getBasePath());
     std::string fullShader = wrapSoundShader(processedCode);
 
     // 和普通 pass 一样过 ANGLE：Sound pass 也可能有没写初值的变量
@@ -812,7 +839,7 @@ bool RenderCore::initSoundPass(RenderPass& pass) {
 
 void RenderCore::renderSoundBatch(int batchSamples, const SoundState& state,
                                   std::vector<int16_t>& out) {
-    if (batchSamples <= 0 || !m_soundPass) return;
+    if (batchSamples <= 0 || !m_passSet.soundPass) return;
     // 中转缓冲是 Sound pass 初始化时开好的。glGetTexImage 会照单全收地往 data() 里写，
     // 缓冲没开起来（初始化失败过）而这里没挡住的话就是段错误
     if (m_soundFloatData.size() < static_cast<size_t>(m_soundBatchSamples) * 2) return;
@@ -822,15 +849,15 @@ void RenderCore::renderSoundBatch(int batchSamples, const SoundState& state,
     out.assign(static_cast<size_t>(batchSamples) * 2, 0);  // 立体声
 
     // 绑定 FBO
-    m_soundPass->framebuffer->bind();
+    m_passSet.soundPass->framebuffer->bind();
     glViewport(0, 0, batchSamples, 1);
-    m_soundPass->framebuffer->clear();
+    m_passSet.soundPass->framebuffer->clear();
 
     // 绑定 shader
-    sf::Shader::bind(&m_soundPass->shader);
+    sf::Shader::bind(&m_passSet.soundPass->shader);
 
     // 设置 uniforms，只设 shader 里真的存在的（否则 SFML 每批都刷 not found 警告）
-    RenderPass& sound = *m_soundPass;
+    RenderPass& sound = *m_passSet.soundPass;
     if (sound.locIResolution >= 0) {
         glUniform3f(sound.locIResolution, static_cast<float>(batchSamples), 1.0f, 1.0f);
     }
@@ -848,15 +875,15 @@ void RenderCore::renderSoundBatch(int batchSamples, const SoundState& state,
 
     // 设置 iChannel uniforms（绑定其他 Buffer 的纹理）
     for (int ch = 0; ch < 4; ++ch) {
-        if (m_soundPass->channels[ch]) {
-            GLTexture* tex = getChannelTexture(*m_soundPass->channels[ch]);
+        if (m_passSet.soundPass->channels[ch]) {
+            GLTexture* tex = getChannelTexture(*m_passSet.soundPass->channels[ch]);
             if (tex) {
                 glActiveTexture(GL_TEXTURE0 + ch);
                 glBindTexture(GL_TEXTURE_2D, tex->id);
-                glBindSampler(ch, m_textures.sampler(m_soundPass->channels[ch]->filter,
-                                                     m_soundPass->channels[ch]->wrap));
-                if (m_soundPass->locChannels[ch] >= 0) {
-                    glUniform1i(m_soundPass->locChannels[ch], ch);  // 采样器取纹理单元 ch
+                glBindSampler(ch, m_textures.sampler(m_passSet.soundPass->channels[ch]->filter,
+                                                     m_passSet.soundPass->channels[ch]->wrap));
+                if (m_passSet.soundPass->locChannels[ch] >= 0) {
+                    glUniform1i(m_passSet.soundPass->locChannels[ch], ch);  // 采样器取纹理单元 ch
                 }
             }
         }
@@ -867,8 +894,8 @@ void RenderCore::renderSoundBatch(int batchSamples, const SoundState& state,
     for (int i = 0; i < 4; ++i) {
         channelTimeValues[i] = state.time;
     }
-    if (m_soundPass->locChannelTime >= 0) {
-        glUniform1fv(m_soundPass->locChannelTime, 4, channelTimeValues.data());
+    if (m_passSet.soundPass->locChannelTime >= 0) {
+        glUniform1fv(m_passSet.soundPass->locChannelTime, 4, channelTimeValues.data());
     }
 
     // 渲染
@@ -883,7 +910,7 @@ void RenderCore::renderSoundBatch(int batchSamples, const SoundState& state,
     GLFramebuffer::unbind();
 
     // 读取 FBO 数据
-    glBindTexture(GL_TEXTURE_2D, m_soundPass->framebuffer->colorTex.id);
+    glBindTexture(GL_TEXTURE_2D, m_passSet.soundPass->framebuffer->colorTex.id);
     glGetTexImage(GL_TEXTURE_2D, 0, GL_RG, GL_FLOAT, floatData.data());
 
     // 转换为 16 位音频

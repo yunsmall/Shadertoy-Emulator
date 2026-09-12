@@ -130,6 +130,12 @@ void ShadertoyEmulator::runWindow() {
             resyncAudio(m_audioResyncTarget);
         }
 
+        // 热重载同理：重建 pass 和 FBO 都碰 GL，不能在 ImGui 回调里做
+        if (m_reloadConfigPending) {
+            m_reloadConfigPending = false;
+            reloadConfig();
+        }
+
         // 暂停时只在有事件时渲染
         bool shouldRender = !m_paused || m_stepFrame;
         if (shouldRender) {
@@ -415,12 +421,19 @@ void ShadertoyEmulator::beginFrame() {
         m_frame.time = std::chrono::duration<float>(now - m_startTime).count();
         m_frame.timeDelta = std::chrono::duration<float>(now - m_lastFrameTime).count();
 
+        // 不用 std::localtime：它返回的地址指向一个静态缓冲区，会被下一次调用踩掉，
+        // MSVC 也已经把它标成 deprecated。自己出缓冲区，两边的安全版本参数顺序不一样
         std::time_t t = std::time(nullptr);
-        std::tm* tm = std::localtime(&t);
-        m_frame.date = {static_cast<float>(tm->tm_year + 1900),
-                        static_cast<float>(tm->tm_mon + 1),
-                        static_cast<float>(tm->tm_mday),
-                        static_cast<float>(tm->tm_hour * 3600 + tm->tm_min * 60 + tm->tm_sec)};
+        std::tm tmBuf{};
+#ifdef _WIN32
+        localtime_s(&tmBuf, &t);  // MSVC 是 (tm*, time_t*)，和 C11 那版正好反着
+#else
+        localtime_r(&t, &tmBuf);
+#endif
+        m_frame.date = {static_cast<float>(tmBuf.tm_year + 1900),
+                        static_cast<float>(tmBuf.tm_mon + 1),
+                        static_cast<float>(tmBuf.tm_mday),
+                        static_cast<float>(tmBuf.tm_hour * 3600 + tmBuf.tm_min * 60 + tmBuf.tm_sec)};
     }
 
     // 本帧帧号的快照，别删。m_frameCount 在 renderPasses() 末尾就自增了，而
@@ -435,6 +448,12 @@ void ShadertoyEmulator::renderPasses(bool intermediate) {
     // 先定好本帧的时间，后面的 buffer pass 和 image pass 都用这一份，
     // 否则 m_frameCount 自增会让两者差一整帧
     beginFrame();
+
+    // 等价于在 GUI 上点一下重载按钮。放在这儿而不是各个模式的循环里，三种模式
+    // 都能走到，而且这时候没在 ImGui 回调里、碰 GL 是安全的
+    if (m_frameCount == m_options.reloadAtFrame) {
+        reloadConfig();
+    }
 
     m_core.updateKeyboard(m_input.keys());
     m_core.renderBufferPasses(m_frame, intermediate);
@@ -549,6 +568,63 @@ void ShadertoyEmulator::resetShader() {
         m_audioResyncTarget = 0.0f;
         m_audioResyncPending = true;
     }
+}
+
+void ShadertoyEmulator::reloadConfig() {
+    const std::filesystem::path sourcePath = m_config.getSourcePath();
+    if (sourcePath.empty()) {
+        std::cerr << "Reload failed: this config has no source path" << std::endl;
+        m_reloadStatus = ReloadStatus::Failed;
+        return;
+    }
+
+    // 新配置读到一份临时的里：读不动的话下面一步都不会发生，原有的一切照常
+    ShaderConfig fresh;
+    if (sourcePath.extension() == ".json") {
+        if (!fresh.load(sourcePath.string())) {
+            std::cerr << "Reload failed: cannot read " << sourcePath.string() << std::endl;
+            m_reloadStatus = ReloadStatus::Failed;
+            return;
+        }
+    } else {
+        // 单 shader 模式，路径指的就是那个 glsl 本身
+        fresh = ShaderConfig::fromSingleShader(sourcePath.string(),
+                                               m_config.getWidth(), m_config.getHeight());
+    }
+
+    // 窗口宽高还是以启动参数为准：配置里改的那两个值不生效，否则得连窗口一起
+    // resize，输出目标、缩略图、音频全要跟着动
+    fresh.setWidth(m_config.getWidth());
+    fresh.setHeight(m_config.getHeight());
+
+    // m_core 拿的是 m_config 的引用，重建期间它看见的必须就是新的那份，否则纹理
+    // 路径会按旧配置去解析；重建失败再把旧的换回来，两边始终是同一份
+    const ShaderConfig previous = m_config;
+    m_config = std::move(fresh);
+
+    if (!m_core.rebuild()) {
+        m_config = previous;
+        m_reloadStatus = ReloadStatus::Failed;
+        std::cerr << "Reload failed: keeping the shaders that are already running" << std::endl;
+        return;
+    }
+
+    // Sound 通道可能新增或消失。新增得现建音频流（构造时那一次建不了它），
+    // 消失得把流关掉，否则播的是上一份留下的缓冲
+    if (!m_core.hasSoundPass()) {
+        m_soundStream.reset();
+    } else if (!m_soundStream && !m_options.isOffscreen()) {
+        m_soundStream = std::make_unique<SoundShaderStream>();
+        m_soundStream->init(SOUND_SAMPLE_RATE);
+        m_soundSamplePosition = 0;
+        for (int i = 0; i < 6; ++i) {
+            generateSoundBatch();
+        }
+        m_soundStream->play();
+    }
+
+    m_reloadStatus = ReloadStatus::Ok;
+    std::cout << "Reloaded config from " << sourcePath.string() << std::endl;
 }
 
 void ShadertoyEmulator::pausePlayback() {

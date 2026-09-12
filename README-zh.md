@@ -165,10 +165,14 @@ ShadertoyEmulator config.json
 | `--debug-view <pass>` | 显示指定 buffer pass 而不是 Image pass，如 `BufferA`（窗口和图片模式都可用） |
 | `--dump-buffers <名字列表\|all>` | **图片模式**：额外把这些 buffer 导到 `<目录>/buffers/<名字>/`，逗号分隔，或写 `all` |
 | `--dump-buffer-gain <n>` | 导出 buffer 前先乘这个数再 clamp 到 0..1（默认 1） |
+| `--export <目录>` | 把这份 shader 导成一个自包含目录后退出——不开窗口、不渲染。每个 glsl 展开自己的 `#include`，别的一个字不动；纹理和配置 JSON 一并拷过去，JSON 里的路径全改成 `./文件名`（`$schema` 字段删掉）。导出的每个文件可以直接粘到 Shadertoy 对应的标签页（`common.glsl` 进 Common，各通道进各自的） |
+| `--clean-export` | 配合 `--export`：先把输出目录清空，免得上一轮多出来的文件留着。输入文件就在该目录里时会拒绝执行 |
+| `--reload-at-frame <帧号>` | 跑到这一帧时重载一次配置，等价于在 GUI 上点一下 `Reload Config`。给测试和调试用 |
 | `--builtin-preprocessor` | 使用内置 GLSL 预处理器 |
 
 三种模式互斥：不给 `--images` 或 `--video` 就是窗口模式。导出模式没有窗口、没有 ImGui、
 没有键鼠输入，跑完自动退出。
+`--export` 是独立操作，不渲染，所以不能和 `--images` / `--video` 一起用。
 
 ## GLSL 预处理器
 
@@ -416,8 +420,10 @@ bug，绝不改变原有功能**，且每一处都会写在该着色器 `config.
 
 带 `--gui` 时，ImGui 面板里还有：
 
-- **Controls** — 暂停 / 单帧 / 重置、时间信息，以及像素探针：鼠标指向画面即读出该像素的
-  RGBA，旁边有色块显示颜色，超出 0..1 的分量标红。取消勾选 `Probe` 可以完全不读。
+- **Controls** — 暂停 / 单帧 / 重置 / 重读配置、时间信息，以及像素探针：鼠标指向画面即读出
+  该像素的 RGBA，旁边有色块显示颜色，超出 0..1 的分量标红。取消勾选 `Probe` 可以完全不读。
+  `Reload Config` 把配置和它引用的文件重读一遍，改完 shader 不用重启；编译不过时窗口照常
+  跑、原有的 shader 留着，具体错在哪看控制台。
 - **Passes** — 点某个 pass 就把画面切到它的 buffer，而不是 Image pass。`Inputs: <pass>`
   展开后是各通道的绑定。`Thumbnails` 显示每个 buffer 的小图（默认关闭；每个 buffer 每帧
   要多一次 blit）。

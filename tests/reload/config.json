@@ -1,0 +1,9 @@
+{
+  "name": "reload 测试",
+  "passes": [
+    {
+      "name": "Image",
+      "shader": "image.glsl"
+    }
+  ]
+}

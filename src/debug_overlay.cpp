@@ -83,6 +83,17 @@ void DebugOverlay::drawControls() {
 
     drawPlaybackButtons(buttonSize);
 
+    // 改完 shader 或配置不用重启，重读一遍就行。重载失败时窗口照常跑、原有 shader
+    // 原样留着，具体错在哪看控制台，这里只说成没成
+    if (ImGui::Button("Reload Config", ImVec2(ImGui::GetContentRegionAvail().x, 26.0f))) {
+        m_emu.m_reloadConfigPending = true;
+    }
+    if (m_emu.m_reloadStatus == ShadertoyEmulator::ReloadStatus::Ok) {
+        ImGui::TextColored(ImVec4(0.40f, 0.80f, 0.40f, 1.0f), "Reloaded");
+    } else if (m_emu.m_reloadStatus == ShadertoyEmulator::ReloadStatus::Failed) {
+        ImGui::TextColored(ImVec4(0.90f, 0.45f, 0.45f, 1.0f), "Reload failed - see console");
+    }
+
     ImGui::SeparatorText("Status");
 
     // 标签列宽度按最长的那个算，几行数值才能对齐成一条

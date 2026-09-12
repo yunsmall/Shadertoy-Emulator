@@ -6,6 +6,7 @@
 #include "shadertoy_emulator.hpp"
 #include "glsl_preprocessor.hpp"
 #include "run_options.hpp"
+#include "shader_exporter.hpp"
 
 int main(int argc, char* argv[]) {
     cxxopts::Options options("ShadertoyEmulator", "Shadertoy Emulator - SFML 3");
@@ -25,6 +26,9 @@ int main(int argc, char* argv[]) {
         ("duration", "Length of the exported video in seconds (required with --video)", cxxopts::value<int>())
         ("dump-audio", "Also write the Sound pass output to a WAV file", cxxopts::value<std::string>())
         ("debug-view", "Show this pass's buffer instead of the Image pass, e.g. BufferA", cxxopts::value<std::string>())
+        ("reload-at-frame", "Reload the config once when this frame is reached, same as pressing Reload Config in the GUI. For testing", cxxopts::value<int>())
+        ("export", "Export a self-contained copy of this shader to this directory: every glsl has its #include expanded and nothing else touched, so each file can be pasted straight into the matching Shadertoy tab. Textures and the config JSON come along, with all paths rewritten to ./name", cxxopts::value<std::string>())
+        ("clean-export", "With --export: wipe the output directory first, so files left over from an earlier run do not stick around")
         ("dump-buffers", "Also write these buffer passes to <output-dir>/buffers/<name>/ (comma separated, or 'all')", cxxopts::value<std::string>())
         ("dump-buffer-gain", "Multiplier applied before clamping buffer values to 0..1 (default: 1)", cxxopts::value<float>()->default_value("1"))
         ("builtin-preprocessor", "Use built-in GLSL preprocessor instead of external (glslangValidator)")
@@ -47,6 +51,7 @@ int main(int argc, char* argv[]) {
             std::cout << "  Export video:   ShadertoyEmulator config.json --video out.mp4 --duration 5 --fps 60\n";
             std::cout << "  Render all:     ShadertoyEmulator config.json --images 0:300:2 --output-dir frames/ --render-all-frames\n";
             std::cout << "  Built-in prep:  ShadertoyEmulator config.json --builtin-preprocessor\n";
+        std::cout << "  Export:         ShadertoyEmulator config.json --export out/\n";
             return 0;
         }
 
@@ -62,6 +67,23 @@ int main(int argc, char* argv[]) {
         bool useBuiltinPreprocessor = result.count("builtin-preprocessor") > 0;
         bool forceGui = result.count("gui") > 0;
         bool forceNoGui = result.count("no-gui") > 0;
+
+        // 导出只做文件处理，不开窗口、不需要 GL 上下文，做完直接退出，
+        // 不进 ShadertoyEmulator
+        if (result.count("export")) {
+            if (result.count("images") || result.count("video")) {
+                std::cerr << "--export is a standalone mode; it cannot be combined with --images or --video.\n";
+                return 1;
+            }
+            const bool cleanOutput = result.count("clean-export") > 0;
+            return exportShader(inputPath, result["export"].as<std::string>(), cleanOutput) ? 0 : 1;
+        }
+
+        // 参数用错模式时报错而不是默默忽略，否则很容易以为生效了
+        if (result.count("clean-export") > 0) {
+            std::cerr << "--clean-export only applies to --export mode.\n";
+            return 1;
+        }
 
         // 三种模式互斥：指定 --images 或 --video 就是导出模式，都没给就是窗口模式
         if (result.count("images") && result.count("video")) {
@@ -87,6 +109,9 @@ int main(int argc, char* argv[]) {
         }
         if (result.count("debug-view") > 0) {
             runOptions.debugViewPass = result["debug-view"].as<std::string>();
+        }
+        if (result.count("reload-at-frame") > 0) {
+            runOptions.reloadAtFrame = result["reload-at-frame"].as<int>();
         }
         if (result.count("dump-buffers") > 0) {
             // 逗号分隔的名字列表。允许写成 "BufferA, BufferC"，顺手把空白去掉

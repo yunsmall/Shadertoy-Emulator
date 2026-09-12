@@ -42,6 +42,11 @@ public:
     // 窗口尺寸变了：输出目标和跟着窗口走的 buffer 一起重建
     void resize(int width, int height);
 
+    // 按当前配置重建所有通道，给热重载用（配置本身由调用方先换好）。
+    // 新的先整套建在一边，全成功了才整体换上去；中途失败就丢掉半成品返回 false，
+    // 正在跑的那套一动不动——一次手滑的编辑不该把画面弄没。错在哪已经打到 stderr
+    bool rebuild();
+
     // 按键状态上传到 iKeyboard 纹理。Shader 靠它认键盘
     void updateKeyboard(const std::array<bool, 256>& keys);
 
@@ -63,7 +68,7 @@ public:
     GLFramebuffer* currentViewTarget(const std::string& debugName);
 
     GLFramebuffer* outputTarget() { return m_outputTarget.get(); }
-    const std::vector<std::unique_ptr<RenderPass>>& passes() const { return m_passes; }
+    const std::vector<std::unique_ptr<RenderPass>>& passes() const { return m_passSet.passes; }
     // 跳帧模式的中间帧也得渲染的通道，依赖分析的结果。调用方拿它告诉使用者跳了谁
     const std::set<RenderPass*>& mustRunEveryFrame() const { return m_mustRunEveryFrame; }
 
@@ -72,21 +77,33 @@ public:
     void blitToThumbnail(RenderPass& pass);
     std::map<std::string, std::unique_ptr<GLFramebuffer>>& thumbnails() { return m_thumbnails; }
 
-    bool hasSoundPass() const { return m_soundPass != nullptr; }
+    bool hasSoundPass() const { return m_passSet.soundPass != nullptr; }
     int soundBatchSamples() const { return m_soundBatchSamples; }
 
 private:
+    // 一套通道。热重载时新的一套整套先在别处建好，全成功了才换上去（见 rebuild），
+    // 所以按套打包，不散成几个各自独立的成员——那样替换时会漏掉一个
+    struct PassSet {
+        std::vector<std::unique_ptr<RenderPass>> passes;
+        std::map<std::string, RenderPass*> byName;
+        RenderPass* soundPass = nullptr;
+    };
+
     // 初始化
     void initQuad();
     bool loadCommonCode();
-    void initPasses();
-    bool loadShader(RenderPass& pass, const PassConfig& config);
+    // 按 config 把通道全建出来放进 out。任何一个没起来（shader 编译不过、FBO 建
+    // 不出来）就返回 false，out 里的半成品由调用方丢掉
+    bool buildPasses(const ShaderConfig& config, PassSet& out);
+    bool loadShader(RenderPass& pass, const PassConfig& config,
+                    const std::filesystem::path& basePath);
     void cacheUniformLocations(RenderPass& pass);
     // isImage 决定输出怎么写：Image 通道是屏幕，alpha 钉成 1；Buffer 通道的 alpha
     // 是数据，原样透传（Shadertoy 的 image 和 buffer 也是两套不同的 footer）
     std::string wrapProcessedShader(const std::string& processedCode, bool isImage);
     std::string wrapSoundShader(const std::string& processedCode);
-    bool initSoundPass(RenderPass& pass);  // 编译不过返回 false，调用方当它不存在
+    // 编译不过返回 false，调用方当它不存在
+    bool initSoundPass(RenderPass& pass, const ShaderConfig& config);
     void initKeyboardTexture();
     // 跳帧模式的中间帧该渲染哪些通道：输出传递依赖自己的（自引用、引用环）必须每帧走，
     // 它们读到的通道也得跟着走。结果存进 m_mustRunEveryFrame
@@ -110,8 +127,7 @@ private:
     GLuint m_vbo = 0;
 
     std::unique_ptr<GLFramebuffer> m_outputTarget;
-    std::vector<std::unique_ptr<RenderPass>> m_passes;
-    std::map<std::string, RenderPass*> m_passMap;
+    PassSet m_passSet;
     // 跳帧模式的中间帧必须渲染的通道，computeMustRunPasses() 算出来的
     std::set<RenderPass*> m_mustRunEveryFrame;
     TextureCache m_textures;
@@ -124,7 +140,6 @@ private:
     // ImGui-SFML 的 ImTextureID 就是 GL 纹理名，直接把纹理递过去就行，不必绕道 sf::Texture
     std::map<std::string, std::unique_ptr<GLFramebuffer>> m_thumbnails;
 
-    RenderPass* m_soundPass = nullptr;
     int m_soundBatchSamples = 22050;  // 一批多少采样，受 GL_MAX_TEXTURE_SIZE 限制
     std::vector<float> m_soundFloatData;  // 读回采样的中转，得按 FBO 宽度开
 };

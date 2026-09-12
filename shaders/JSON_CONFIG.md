@@ -462,6 +462,9 @@ ShadertoyEmulator config.json --video out.mp4 --duration 5 --fps 60
 
 # 顺便把 Sound pass 的音频单独写成 WAV
 ShadertoyEmulator config.json --images 0:300:1 --output-dir out/ --dump-audio out/audio.wav
+
+# 导出成自包含目录，每个 glsl 可以直接粘到 Shadertoy 上
+ShadertoyEmulator config.json --export out/
 ```
 
 ### 命令行参数
@@ -480,6 +483,8 @@ ShadertoyEmulator config.json --images 0:300:1 --output-dir out/ --dump-audio ou
 | `--duration <秒>` | 视频时长，用 `--video` 时必填 |
 | `--fps <n>` | 导出帧率（默认 60）：图片模式决定 `iTime` 的步长，视频模式还决定输出帧率 |
 | `--dump-audio <file>` | 额外把 Sound pass 的输出写成 WAV 文件 |
+| `--export <目录>` | 把这份配置涉及的 glsl、纹理和配置本身导到一个目录：每个 glsl 展开自己的 `#include`（别的一个字不动），JSON 里的路径全改成 `./文件名`（`$schema` 字段删掉）。导出的文件可以直接粘到 Shadertoy 对应标签页（common 进 Common，各通道进各自的），不能和 `--images` / `--video` 一起用 |
+| `--clean-export` | 配合 `--export`：先把输出目录清空，免得上一轮多出来的文件留着。输入文件就在该目录里时会拒绝执行 |
 | `--builtin-preprocessor` | 使用内置GLSL预处理器（默认使用外部glslangValidator） |
 
 > 三种模式互斥，不给 `--images` 或 `--video` 就是窗口模式。导出模式无窗口、无 ImGui、

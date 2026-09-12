@@ -239,7 +239,9 @@ std::string GlslPreprocessor::processCode(const std::string& code,
                 // 被包含的文件长短不一，之后的行号会整体偏掉。#line 把下一行拉回
                 // 本文件的行号，编译报错才指得准（GLSL 的 #line 只吃行号和源串号，
                 // 不像 C 那样能跟一个文件名）
-                output << "#line " << (lineNo + 1) << "\n";
+                if (m_emitLineDirectives) {
+                    output << "#line " << (lineNo + 1) << "\n";
+                }
                 continue;
             }
 
