@@ -69,6 +69,19 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake"
           cmake --build build --parallel
 
+      # fpm 的 --depends 是按这份清单手工维护的，漏一个用户装完就跑不起来，多一个会拖进
+      # 没用的包。这里把实际链接到的库打出来，改依赖时对着它核对
+      - name: 检查动态库依赖
+        run: |
+          echo "--- 直接依赖 ---"
+          readelf -d build/ShadertoyEmulator | grep NEEDED
+          echo "--- 传递依赖 ---"
+          ldd build/ShadertoyEmulator
+          if ldd build/ShadertoyEmulator | grep -q 'not found'; then
+            echo "::error::有没能解析的动态库"
+            exit 1
+          fi
+
       # 离屏模式也要真实的 GL 上下文（sf::Context 走 GLX），无头机器上得靠 Xvfb + Mesa 软件渲染
       - name: 跑测试
         run: |
@@ -96,7 +109,10 @@ jobs:
           [[ "$version" =~ ^[0-9] ]] || version="0.0.0"
           # ffmpeg 走的是发行版的动态库，依赖得写进包元信息里，用户 apt install 时
           # 才会连它那一串运行库一起装上
+          # libstdc++6 在 Debian 基础系统里本来就有，列出来是按 dpkg-shlibdeps 的规矩
+          # 把直接链接的库写全
           fpm -s dir -t deb -n shadertoy-emulator -v "$version" -a ${{ matrix.deb-arch }} \
+            --depends libstdc++6 \
             --depends libavcodec60 --depends libavformat60 --depends libavutil58 \
             --depends libswscale7 --depends libswresample4 \
             --depends libx11-6 --depends libxrandr2 --depends libxcursor1 \

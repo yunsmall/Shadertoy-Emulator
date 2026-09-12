@@ -71,6 +71,12 @@ void RenderCore::init(int width, int height) {
     m_width = width;
     m_height = height;
 
+    // 每个 pass 的 shader 都先过 ANGLE 翻成桌面 GLSL。它只认 GLSL ES，顺带把 WebGL
+    // 的语义一并补齐——最要紧的是未初始化变量为 0：桌面驱动不保证这个，Shadertoy
+    // 的 shader 却依赖
+    std::cout << "Translating shaders with ANGLE (GLSL ES -> desktop GLSL, WebGL semantics)"
+              << std::endl;
+
     initQuad();
 
     // 所有 pass 的结果都先画进这个输出目标，之后要么截图、要么贴到窗口。
@@ -254,7 +260,7 @@ bool RenderCore::loadShader(RenderPass& pass, const PassConfig& config) {
 
     cacheUniformLocations(pass);
 
-    std::cout << "Loaded shader: " << fullPath << std::endl;
+    std::cout << "Loaded shader: " << fullPath << " (GLSL ES -> 330 core)" << std::endl;
     return true;
 }
 
@@ -799,7 +805,8 @@ bool RenderCore::initSoundPass(RenderPass& pass) {
     m_soundFloatData.resize(static_cast<size_t>(m_soundBatchSamples) * 2);
 
     std::cout << "Initialized sound pass: " << m_soundBatchSamples << " samples per batch ("
-              << (m_soundBatchSamples * 1000.0 / SOUND_SAMPLE_RATE) << "ms @ " << SOUND_SAMPLE_RATE << "Hz)" << std::endl;
+              << (m_soundBatchSamples * 1000.0 / SOUND_SAMPLE_RATE) << "ms @ " << SOUND_SAMPLE_RATE
+              << "Hz) (GLSL ES -> 330 core)" << std::endl;
     return true;
 }
 
