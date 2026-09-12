@@ -159,10 +159,10 @@ ShadertoyEmulator config.json
 | `--height <n>` | Override window height |
 | `--show-fps` | Display frame rate in console |
 | `--gui` / `--no-gui` | Force-enable / disable the ImGui panel (overrides config) |
-| `--images <start:stop:step>` | **Image mode**: export a PNG sequence, Python slice syntax, e.g. `0:300:2` (`stop` required and excluded) |
+| `--images <start:stop:step>` | **Image mode**: export a PNG sequence, Python slice syntax, e.g. `0:300:2` (`stop` required and excluded). Repeat the flag or comma separate to pick several ranges |
 | `--output-dir <dir>` | Directory for the PNG sequence; required with `--images` |
-| `--skip-intermediate` | **Image mode**: skip the frames in between that nothing stateful depends on. Stateful passes (and whatever they read) still run every frame, so the result matches a full render |
-| `--force-skip-intermediate` | **Image mode**: skip the frames in between without that analysis. Faster, but wrong for shaders with cross-frame state |
+| `--render-all-frames` | **Image mode**: render every frame up to `stop` instead of skipping the ones in between. Slower; only needed if you would rather not rely on the dependency analysis |
+| `--force-skip-intermediate` | **Image mode**: skip the frames in between without running that analysis. Faster, but wrong for shaders with cross-frame state |
 | `--video <file.mp4>` | **Video mode**: export an H.264 + AAC mp4; requires `--duration` |
 | `--duration <seconds>` | Length of the exported video; required with `--video` |
 | `--fps <n>` | Export frame rate (default: 60). Image mode uses it as the `iTime` step; video mode also uses it as the output frame rate |
@@ -249,16 +249,21 @@ ShadertoyEmulator config.json --images 0:300:2 --output-dir frames/ --fps 30
 ```
 
 - `--images` uses Python slice syntax: `0:300:2` saves frames 0, 2, 4, …, 298 (`stop` is excluded and required).
+- Give it more than once (`--images 0:10 --images 500 --images 900:1000:5`) or comma separate the ranges to
+  pick frames that a single stride cannot reach. The frames are merged, so overlapping ranges do not save
+  any frame twice, and each file keeps its absolute frame number.
 - Files are named `%05d.png` with the absolute frame index (`00000.png`, `00002.png`, …).
 - Export uses virtual time (`iTime = iFrame / --fps`) so results are reproducible.
 - The output directory is created if it does not exist.
-- `--skip-intermediate` drops the frames in between that nothing stateful depends on. A pass
-  whose output feeds back into itself (a buffer reading its own previous frame, or a reference
-  cycle) keeps running every frame, along with whatever it reads, so those shaders come out
-  identical to a full render — what gets skipped is only the stateless part.
-- `--force-skip-intermediate` skips the frames in between without that analysis. Faster still,
-  and wrong for anything carrying state across frames: the program warns when it sees a feedback
-  buffer or a Sound pass, but runs anyway.
+- By default the frames in between that nothing stateful depends on are not rendered at all. A
+  pass whose output feeds back into itself — a buffer reading its own previous frame, or a
+  reference cycle — keeps running every frame, along with whatever it reads, so stateful shaders
+  come out identical to a full render; only the stateless part is skipped.
+- `--render-all-frames` renders every frame up to `stop` anyway. Slower, and only needed if you
+  would rather not rely on that analysis.
+- `--force-skip-intermediate` goes the other way: it skips the frames in between without the
+  analysis. Faster still, and wrong for anything carrying state across frames — the program warns
+  when it sees a feedback buffer or a Sound pass, but runs anyway.
 - `--dump-buffers BufferA,BufferC` (or `all`) additionally writes those buffer passes to
   `<dir>/buffers/<name>/`, using the same frame indices. Buffers hold floating-point data, so
   values are multiplied by `--dump-buffer-gain` and clamped to 0..1 when written as 8-bit PNG.

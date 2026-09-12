@@ -174,13 +174,23 @@ void ShadertoyEmulator::runWindow() {
 }
 
 void ShadertoyEmulator::runImages() {
-    const FrameRange& range = m_options.imageRange;
+    const std::vector<FrameRange>& ranges = m_options.imageRanges;
     const auto exportStart = std::chrono::steady_clock::now();
 
     if (!ensureDir(m_options.imageDir)) return;
 
-    std::cout << "Exporting images: frames [" << range.start << ", " << range.stop
-              << ") step " << range.step << " (" << range.count() << " images) -> "
+    // 渲染到最后一个目标帧为止，中间的空档也得走过去：有状态的通道要靠这些帧补历史
+    int stop = 0;
+    for (const FrameRange& r : ranges) stop = std::max(stop, r.stop);
+    const auto selected = [&ranges](int f) {
+        for (const FrameRange& r : ranges) {
+            if (r.contains(f)) return true;
+        }
+        return false;
+    };
+
+    // 这儿不报张数：段之间可以重叠，加起来不是并集大小。存完了按实际存的数报
+    std::cout << "Exporting images: up to frame " << stop - 1 << " -> "
               << std::filesystem::absolute(m_options.imageDir) << std::endl;
 
     // 要一并导出的 buffer，名字在这里一次性解析成指针，免得每帧去查一遍 map
@@ -210,7 +220,10 @@ void ShadertoyEmulator::runImages() {
     if (m_options.forceSkipIntermediate) {
         std::cout << "Skipping frames in between: no dependency check, only the saved frames render"
                   << std::endl;
-    } else if (m_options.skipIntermediate) {
+    } else if (m_options.renderAllFrames) {
+        std::cout << "Rendering every frame up to " << stop << " (--render-all-frames)"
+                  << std::endl;
+    } else {
         std::string keep;
         for (auto& pass : m_core.passes()) {
             if (m_core.mustRunEveryFrame().count(pass.get()) == 0) continue;
@@ -256,44 +269,33 @@ void ShadertoyEmulator::runImages() {
         saved++;
     };
 
-    if (m_options.forceSkipIntermediate) {
-        // 不做依赖分析，只渲染要存的那几帧。m_frameCount 直接跳到目标帧：beginFrame()
-        // 拿它算 iFrame/iTime，所以留下来的帧看到的时间跟全渲染时一模一样
-        for (int f = range.start; f < range.stop; f += range.step) {
-            m_frameCount = f;
-            renderPasses();  // 它末尾的 m_frameCount++ 下一轮会被覆盖，无所谓
+    // 三条路的差别只在中间帧渲染多少，逐帧走这一层是共用的：
+    //   强制跳帧——中间帧什么都不跑，帧号直接跨过去
+    //   全渲染——每帧照常渲染，只是不存盘
+    //   默认——中间帧只跑状态链条上的通道（有状态的那条链一帧不落地跑完，反馈值才跟
+    //          全渲染一致），无状态的跳过，这才是省下来的部分
+    while (m_frameCount < stop) {
+        // 判断拿 m_frameCount，不能看 m_frame.frameIndex——后者是上一轮 beginFrame()
+        // 留下的，还没轮到本帧
+        const bool target = selected(m_frameCount);
+
+        if (!target && m_options.forceSkipIntermediate) {
+            ++m_frameCount;  // 这一帧什么都不做，renderPasses 的自增就用不上了
+            continue;
+        }
+
+        const bool intermediate = !target && !m_options.renderAllFrames;
+        renderPasses(intermediate);
+        if (target) {
             renderToScreen();
             saveFrame();
         }
-    } else if (m_options.skipIntermediate) {
-        // 还是逐帧走，但中间帧只渲染状态链条上的通道：有状态的那条链一帧不落地跑完，
-        // 所以它的反馈值跟全渲染时一致；无状态的中间帧跳过，这才是省下来的部分
-        while (m_frameCount < range.stop) {
-            // 拿 m_frameCount 判断，不能看 m_frame.frameIndex——后者是上一轮 beginFrame()
-            // 留下的，还没轮到本帧（原路径是在渲染之后才判断，所以那边没这个坑）
-            const bool isTarget = range.contains(m_frameCount);
-            renderPasses(!isTarget);
-            if (isTarget) {
-                renderToScreen();
-                saveFrame();
-            }
-        }
-    } else {
-        while (m_frameCount < range.stop) {
-            renderPasses();
-            renderToScreen();
-
-            if (range.contains(m_frame.frameIndex)) {
-                saveFrame();
-            }
-        }
     }
 
-    // 每帧成本按实际渲染的帧数算，不是存盘张数：--images 0:300:2 只存 150 张，
-    // 全渲染那条路 300 帧一帧不少，拿存盘张数去除会把成本算高一倍；
-    // 只跳中间帧的那条路也还是逐帧走，一样是 range.stop；
-    // 强制跳帧那条真的只渲染了存盘的那些
-    const int rendered = m_options.forceSkipIntermediate ? range.count() : range.stop;
+    // 每帧成本按实际渲染的帧数算，不是存盘张数：挑出来的帧可能只占一小段，
+    // 全渲染和跳中间帧那两条路都是逐帧走到 stop，拿存盘张数去除会把成本算高；
+    // 强制跳帧那条真的只渲染了目标帧
+    const int rendered = m_options.forceSkipIntermediate ? saved : stop;
     m_exporter.finish(std::to_string(saved) + " frames", rendered, exportStart);
 }
 

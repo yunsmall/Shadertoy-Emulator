@@ -21,13 +21,15 @@ struct RunOptions {
     // 导出模式的帧率：图片模式决定 iTime 每帧走多少，视频模式还决定输出帧率
     float fps = 60.0f;
 
-    // Images 模式
-    FrameRange imageRange;
+    // Images 模式。可以给多个 --images（逗号分隔也行），每段是一个 Python 切片——
+    // 只按固定间隔挑帧太局限，比如想取几个关键帧再补一段密集的。段之间允许重叠，
+    // 重复的帧只处理一次
+    std::vector<FrameRange> imageRanges;
     std::filesystem::path imageDir;
-    // 只渲染被选中的帧，跳过中间的。会先做依赖分析：无状态的通道才跳，有状态的
-    // 通道和它们读到的照常每帧渲染（见 RenderCore::computeMustRunPasses），
-    // 所以结果和全渲染一致
-    bool skipIntermediate = false;
+    // 导出图片默认就会做依赖分析：无状态的通道跳过，有状态的通道和它们读到的照常
+    // 每帧渲染（见 RenderCore::computeMustRunPasses），结果和全渲染一致。
+    // 下面这个开关反过来，一帧不落地全渲染——给不信赖分析结果的场合用
+    bool renderAllFrames = false;
     // 不做依赖分析，中间帧一律不渲染。有帧间状态的 shader 会算错，快但危险
     bool forceSkipIntermediate = false;
 

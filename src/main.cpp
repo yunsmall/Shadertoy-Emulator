@@ -17,9 +17,9 @@ int main(int argc, char* argv[]) {
         ("fps", "Frame rate for exported images and video (default: 60)", cxxopts::value<int>()->default_value("60"))
         ("gui", "Enable GUI (overrides config)")
         ("no-gui", "Disable GUI (overrides config)")
-        ("images", "Export a PNG sequence: frame range in Python slice syntax, e.g. 0:100:2 (stop required, excluded). Requires --output-dir", cxxopts::value<std::string>())
+        ("images", "Export a PNG sequence: frame selection in Python slice syntax, e.g. 0:100:2 (stop required, excluded). Repeat the flag or comma separate to pick several ranges. Requires --output-dir", cxxopts::value<std::vector<std::string>>())
         ("output-dir", "Directory for the PNG sequence (required with --images)", cxxopts::value<std::string>())
-        ("skip-intermediate", "Only render the frames selected by --images: the frames in between that nothing stateful depends on are skipped")
+        ("render-all-frames", "Render every frame up to stop instead of skipping the ones in between. Slower; only needed if the dependency analysis is not wanted")
         ("force-skip-intermediate", "Skip the frames in between without checking dependencies. Faster, but wrong for shaders with cross-frame state")
         ("video", "Export a video to this path. Requires --duration", cxxopts::value<std::string>())
         ("duration", "Length of the exported video in seconds (required with --video)", cxxopts::value<int>())
@@ -45,7 +45,7 @@ int main(int argc, char* argv[]) {
             std::cout << "  With options:   ShadertoyEmulator config.json --width 1920 --height 1080 --show-fps\n";
             std::cout << "  Export images:  ShadertoyEmulator config.json --images 0:300:2 --output-dir frames/ --fps 30\n";
             std::cout << "  Export video:   ShadertoyEmulator config.json --video out.mp4 --duration 5 --fps 60\n";
-            std::cout << "  Skip frames:    ShadertoyEmulator config.json --images 0:300:2 --output-dir frames/ --skip-intermediate\n";
+            std::cout << "  Render all:     ShadertoyEmulator config.json --images 0:300:2 --output-dir frames/ --render-all-frames\n";
             std::cout << "  Built-in prep:  ShadertoyEmulator config.json --builtin-preprocessor\n";
             return 0;
         }
@@ -71,10 +71,10 @@ int main(int argc, char* argv[]) {
 
         RunOptions runOptions;
         runOptions.showFps = result.count("show-fps") > 0;
-        runOptions.skipIntermediate = result.count("skip-intermediate") > 0;
+        runOptions.renderAllFrames = result.count("render-all-frames") > 0;
         runOptions.forceSkipIntermediate = result.count("force-skip-intermediate") > 0;
-        if (runOptions.skipIntermediate && runOptions.forceSkipIntermediate) {
-            std::cerr << "--skip-intermediate and --force-skip-intermediate are mutually exclusive.\n";
+        if (runOptions.renderAllFrames && runOptions.forceSkipIntermediate) {
+            std::cerr << "--render-all-frames and --force-skip-intermediate are mutually exclusive.\n";
             return 1;
         }
         runOptions.fps = static_cast<float>(result["fps"].as<int>());
@@ -115,9 +115,9 @@ int main(int argc, char* argv[]) {
         }
 
         // 视频每一帧都得有，窗口模式也不导帧，跳帧只对图片序列有意义
-        if ((result.count("skip-intermediate") > 0 || result.count("force-skip-intermediate") > 0)
+        if ((result.count("render-all-frames") > 0 || result.count("force-skip-intermediate") > 0)
             && result.count("images") == 0) {
-            std::cerr << "--skip-intermediate/--force-skip-intermediate only apply to --images mode.\n";
+            std::cerr << "--render-all-frames/--force-skip-intermediate only apply to --images mode.\n";
             return 1;
         }
 
@@ -125,11 +125,14 @@ int main(int argc, char* argv[]) {
         if (result.count("images")) {
             runOptions.mode = RunMode::Images;
 
-            std::string imagesText = result["images"].as<std::string>();
-            if (!parseFrameRange(imagesText, runOptions.imageRange)) {
-                std::cerr << "Invalid --images value: '" << imagesText << "'\n"
-                          << "Expected Python slice syntax like 0:100:2 (stop is required and excluded).\n";
-                return 1;
+            for (const std::string& imagesText : result["images"].as<std::vector<std::string>>()) {
+                FrameRange range;
+                if (!parseFrameRange(imagesText, range)) {
+                    std::cerr << "Invalid --images value: '" << imagesText << "'\n"
+                              << "Expected Python slice syntax like 0:100:2 (stop is required and excluded).\n";
+                    return 1;
+                }
+                runOptions.imageRanges.push_back(range);
             }
             if (result.count("duration") > 0) {
                 std::cerr << "--duration only applies to --video mode.\n";

@@ -472,9 +472,9 @@ ShadertoyEmulator config.json --images 0:300:1 --output-dir out/ --dump-audio ou
 | `--height <n>` | 覆盖窗口高度 |
 | `--show-fps` | 在控制台显示帧率 |
 | `--gui` / `--no-gui` | 强制开启/关闭 ImGui 面板（覆盖配置里的 `gui`） |
-| `--images <start:stop:step>` | **图片模式**：导出的帧范围，Python 切片语法，**不含 stop**，start 默认 0、step 默认 1、stop 必填 |
+| `--images <start:stop:step>` | **图片模式**：导出的帧范围，Python 切片语法，**不含 stop**，start 默认 0、step 默认 1、stop 必填。可以给多次或用逗号分隔指定多个区间，帧号合并去重 |
 | `--output-dir <dir>` | PNG 保存目录，用 `--images` 时必填（没有默认目录，不存在则自动创建），文件名为补零 5 位的帧号，如 `00000.png` |
-| `--skip-intermediate` | **图片模式**：跳过中间那些没人依赖的帧。输出会传回给自己的通道（自引用 buffer、引用环）和它们读到的通道照常每帧渲染，所以结果和全渲染一致，只省下无状态的部分 |
+| `--render-all-frames` | **图片模式**：一帧不落地渲染到 `stop`。图片模式默认就会跳过没人依赖的中间帧（输出会传回给自己的通道及其读取的通道照常每帧渲染，结果和全渲染一致），只有不想依赖这套分析时才用它 |
 | `--force-skip-intermediate` | **图片模式**：不做依赖分析，中间帧一律不渲染。更快，但有帧间状态的 shader 会算错（检测到自引用 buffer 或 Sound pass 会警告，但照跑） |
 | `--video <file.mp4>` | **视频模式**：导出 H.264 + AAC 的 mp4，需搭配 `--duration` |
 | `--duration <秒>` | 视频时长，用 `--video` 时必填 |

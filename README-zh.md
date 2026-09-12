@@ -153,9 +153,9 @@ ShadertoyEmulator config.json
 | `--height <n>` | 覆盖窗口高度 |
 | `--show-fps` | 在控制台显示帧率 |
 | `--gui` / `--no-gui` | 强制开启 / 关闭 ImGui 面板（覆盖配置） |
-| `--images <start:stop:step>` | **图片模式**：导出 PNG 序列，Python 切片语法，如 `0:300:2`（`stop` 必填且不含） |
+| `--images <start:stop:step>` | **图片模式**：导出 PNG 序列，Python 切片语法，如 `0:300:2`（`stop` 必填且不含）。可以给多次或用逗号分隔来指定多个区间 |
 | `--output-dir <dir>` | PNG 保存目录，用 `--images` 时必填 |
-| `--skip-intermediate` | **图片模式**：跳过中间那些没人依赖的帧。有帧间状态的通道及其读取的通道照常每帧渲染，结果和全渲染一致 |
+| `--render-all-frames` | **图片模式**：一帧不落地渲染到 `stop`，不做跳过。更慢，只有不想依赖那套分析时才用它 |
 | `--force-skip-intermediate` | **图片模式**：不做依赖分析，中间帧一律不渲染。更快，但有帧间状态的 shader 会算错 |
 | `--video <file.mp4>` | **视频模式**：导出 H.264 + AAC 的 mp4，需搭配 `--duration` |
 | `--duration <秒>` | 视频时长，用 `--video` 时必填 |
@@ -243,14 +243,17 @@ ShadertoyEmulator config.json --images 0:300:2 --output-dir frames/ --fps 30
 ```
 
 - `--images` 用 Python 切片语法：`0:300:2` 表示保存第 0、2、4、…、298 帧（`stop` 不含且必填）
+- 可以给多次（`--images 0:10 --images 500 --images 900:1000:5`）或把区间用逗号隔开，挑那些单一
+  步长够不着的帧。帧号会合并去重，重叠的区间不会重复存；文件名仍用各自的绝对帧号
 - 文件名为 `%05d.png`，用绝对帧号（`00000.png`、`00002.png`…）
 - 导出时用虚拟时间（`iTime = iFrame / --fps`），保证结果可复现
 - 输出目录不存在会自动创建
-- `--skip-intermediate` 跳过中间那些没人依赖的帧。输出会传回给自己的通道（自引用 buffer、
-  引用环）以及它们读到的通道照常每帧渲染，所以有状态的 shader 出来的结果和全渲染一模一样，
-  省下的只有无状态的那部分
-- `--force-skip-intermediate` 不做这套分析，中间帧一律不渲染。还要更快就用它，代价是有
-  帧间状态的 shader 会算错——检测到自引用 buffer 或 Sound pass 时会警告，但照样跑
+- 默认就不渲染中间那些没人依赖的帧。输出会传回给自己的通道（自引用 buffer、引用环）以及
+  它们读到的通道照常每帧渲染，所以有状态的 shader 出来的结果和全渲染一模一样，省下的只有
+  无状态的那部分
+- `--render-all-frames` 反过来，一帧不落地渲染到 `stop`。更慢，只有不想依赖这套分析时才用
+- `--force-skip-intermediate` 另一个方向：不做分析，中间帧一律不渲染。还要更快就用它，代价
+  是有帧间状态的 shader 会算错——检测到自引用 buffer 或 Sound pass 时会警告，但照样跑
 - `--dump-buffers BufferA,BufferC`（或写 `all`）额外把这些 buffer 导到
   `<目录>/buffers/<名字>/`，帧号和主图一致。buffer 里存的是浮点，写成 8 位 PNG 前会先乘
   `--dump-buffer-gain` 再 clamp 到 0..1
