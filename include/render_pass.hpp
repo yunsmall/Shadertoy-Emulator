@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 
 // 一个 pass 的运行时状态：shader、渲染目标、输入通道，以及编译后预查的 uniform location。
 // Shadertoy 把 pass 分三类，靠 isImage / isSound 区分：
@@ -26,6 +27,11 @@ struct RenderPass {
     int currentBuffer = 0;
     bool isImage = false;
     bool isSound = false;
+
+    // ANGLE 翻译时会给标识符加前缀（iResolution 变成 _uiResolution），这里是原名
+    // 到驱动里实际名字的对照表。设 uniform 和查 location 都要过它，每帧都查，
+    // 所以用 unordered_map
+    std::unordered_map<std::string, std::string> nameMap;
 
     // 编译后预查的 uniform location。-1 表示 shader 里没有这个 uniform
     // （GLSL 编译器会把没用到的优化掉），这时不能调 setUniform，否则 SFML 每帧刷一行警告

@@ -26,6 +26,7 @@
 - cxxopts
 - nlohmann_json
 - FFmpeg 开发库（libavcodec、libavformat、libavutil、libswscale、libswresample）——视频导出用
+- ANGLE —— shader 翻译器，把 GLSL ES 翻成桌面 GLSL 并补齐 WebGL 的未初始化变量语义
 - glslangValidator（可选，默认的 GLSL 预处理器，见下方"GLSL 预处理器"）
 
 ## 构建
@@ -294,6 +295,23 @@ ShadertoyEmulator config.json --video out.mp4 --duration 5 --fps 60
 | `iDate` | vec4 | 日期时间 |
 | `iChannel0-3` | sampler2D | 输入通道 |
 | `iChannelResolution` | vec3[4] | 通道分辨率 |
+
+### 未初始化变量
+
+GLSL 规范里没写初值的变量值是 undefined，桌面驱动给的是寄存器里的残值——实测
+`float`/`vec3` 拿到的都不是 0。而 Shadertoy 跑在 WebGL 上，WebGL 额外保证未初始化变量
+为 0，不少 shader 是踩着这条保证写的。所以本程序把整段 shader 交给 **ANGLE**（Chromium
+跑 WebGL 用的那个 shader 翻译器）翻成桌面 GLSL，顺带补齐了 WebGL 的这条语义：
+
+```glsl
+float d;         // 补成 float d = 0.0;
+vec3 col;        // 补成 vec3 col = vec3(0.0);
+RayResult res;   // 结构体整个补零，字段级漏赋值也兜得住
+```
+
+补零由真正的 GLSL 前端做，判断不靠文本匹配，struct、数组、函数局部变量都没问题。代价
+是 shader 得写成 GLSL ES 的样子（Shadertoy 的 shader 本来就是），并且编译错误由 ANGLE
+报出——报错里的行号仍然对应你的 shader 源文件。
 
 ### 坐标系与方向
 

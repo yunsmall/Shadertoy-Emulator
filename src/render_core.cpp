@@ -1,5 +1,6 @@
 #include "render_core.hpp"
 #include "glsl_preprocessor.hpp"
+#include "glsl_translator.hpp"
 #include "audio_format.hpp"
 #include <glad/glad.h>
 #include <fstream>
@@ -32,7 +33,12 @@ static std::string stripLineFilenames(const std::string& code) {
 // 放一处免得改动 GLSL 版本或加 uniform 时要同时改好几个地方
 static std::string glslHeader(bool isSound) {
     std::ostringstream shader;
-    shader << "#version 330 core\n\n";
+    // ESSL 300 而不是桌面 GLSL：整段 shader 随后要交给 ANGLE 翻译，它只认 ES 版本。
+    // 翻译的产物才是喂给驱动的桌面 GLSL
+    shader << "#version 300 es\n\n";
+    // ES 的片元着色器没有默认精度，float 不声明就编译不过
+    shader << "precision highp float;\n";
+    shader << "precision highp int;\n\n";
 
     shader << (isSound ? "out vec2 fragColor;\n\n" : "out vec4 fragColor;\n\n");
     shader << "uniform vec3 iResolution;\n";
@@ -231,7 +237,17 @@ bool RenderCore::loadShader(RenderPass& pass, const PassConfig& config) {
     // 包装预处理后的代码
     std::string fullShader = wrapProcessedShader(processedCode, pass.isImage);
 
-    if (!pass.shader.loadFromMemory(fullShader, sf::Shader::Type::Fragment)) {
+    // 交给 ANGLE 翻成桌面 GLSL：ES 和桌面的语法差异由它抹平，未初始化的变量也在
+    // 这一步补上零值（桌面驱动不保证那个，Shadertoy 的 shader 却依赖它）
+    TranslatedShader translated = translateShader(fullShader);
+    if (!translated.ok) {
+        std::cerr << "Shader translation failed for " << pass.name << " (" << fullPath
+                  << "):\n" << translated.log << std::endl;
+        return false;
+    }
+    pass.nameMap = translated.uniforms;
+
+    if (!pass.shader.loadFromMemory(translated.code, sf::Shader::Type::Fragment)) {
         std::cerr << "Shader compilation failed for " << pass.name << std::endl;
         return false;
     }
@@ -244,8 +260,11 @@ bool RenderCore::loadShader(RenderPass& pass, const PassConfig& config) {
 
 void RenderCore::cacheUniformLocations(RenderPass& pass) {
     const GLuint program = pass.shader.getNativeHandle();
-    auto loc = [program](const std::string& name) {
-        return glGetUniformLocation(program, name.c_str());
+    // 查 location 用的得是 ANGLE 翻译后驱动里的名字，不是源码里写的那个
+    auto loc = [&pass, program](const std::string& name) {
+        const auto it = pass.nameMap.find(name);
+        const std::string& actual = it == pass.nameMap.end() ? name : it->second;
+        return glGetUniformLocation(program, actual.c_str());
     };
 
     pass.locIResolution = loc("iResolution");
@@ -508,7 +527,8 @@ void RenderCore::bindChannels(RenderPass& pass) {
             static_cast<float>(tex->height), 1.0f);
     }
     if (pass.locChannelResolution >= 0) {
-        pass.shader.setUniformArray("iChannelResolution", channelResolutions.data(), 4);
+        glUniform3fv(pass.locChannelResolution, 4,
+                     reinterpret_cast<const float*>(channelResolutions.data()));
     }
 }
 
@@ -518,30 +538,29 @@ void RenderCore::updateUniforms(RenderPass& pass, int width, int height, const F
     sf::Shader& shader = pass.shader;
     sf::Shader::bind(&shader);
 
+    // 全部走缓存的 location：按名字设等于每帧让 SFML 再查一遍 glGetUniformLocation
     if (pass.locIResolution >= 0) {
-        shader.setUniform("iResolution", sf::Glsl::Vec3(static_cast<float>(width),
-                                                          static_cast<float>(height), 1.0f));
+        glUniform3f(pass.locIResolution, static_cast<float>(width),
+                    static_cast<float>(height), 1.0f);
     }
-    if (pass.locITime >= 0) shader.setUniform("iTime", frame.time);
-    if (pass.locITimeDelta >= 0) shader.setUniform("iTimeDelta", frame.timeDelta);
-    if (pass.locIFrame >= 0) shader.setUniform("iFrame", frame.frameIndex);
-    if (pass.locIFrameRate >= 0) shader.setUniform("iFrameRate", iFrameRate);
+    if (pass.locITime >= 0) glUniform1f(pass.locITime, frame.time);
+    if (pass.locITimeDelta >= 0) glUniform1f(pass.locITimeDelta, frame.timeDelta);
+    if (pass.locIFrame >= 0) glUniform1i(pass.locIFrame, frame.frameIndex);
+    if (pass.locIFrameRate >= 0) glUniform1f(pass.locIFrameRate, iFrameRate);
 
     if (pass.locIMouse >= 0) {
-        shader.setUniform("iMouse", frame.mouse);
+        glUniform4f(pass.locIMouse, frame.mouse.x, frame.mouse.y, frame.mouse.z,
+                    frame.mouse.w);
     }
 
     if (pass.locIDate >= 0) {
-        shader.setUniform("iDate", sf::Glsl::Vec4(frame.date[0], frame.date[1],
-                                                   frame.date[2], frame.date[3]));
+        glUniform4f(pass.locIDate, frame.date[0], frame.date[1], frame.date[2], frame.date[3]);
     }
 
     if (pass.locChannelTime >= 0) {
-        std::array<float, 4> channelTimeValues;
-        for (int i = 0; i < 4; ++i) {
-            channelTimeValues[i] = frame.time;
-        }
-        shader.setUniformArray("iChannelTime", channelTimeValues.data(), 4);
+        const std::array<float, 4> channelTimeValues = {frame.time, frame.time, frame.time,
+                                                        frame.time};
+        glUniform1fv(pass.locChannelTime, 4, channelTimeValues.data());
     }
 }
 
@@ -761,7 +780,16 @@ bool RenderCore::initSoundPass(RenderPass& pass) {
     std::string processedCode = preprocessor.process(combinedCode, m_config.getBasePath());
     std::string fullShader = wrapSoundShader(processedCode);
 
-    if (!pass.shader.loadFromMemory(fullShader, sf::Shader::Type::Fragment)) {
+    // 和普通 pass 一样过 ANGLE：Sound pass 也可能有没写初值的变量
+    TranslatedShader translated = translateShader(fullShader);
+    if (!translated.ok) {
+        std::cerr << "Sound shader translation failed (" << fullPath << "):\n"
+                  << translated.log << std::endl;
+        return false;
+    }
+    pass.nameMap = translated.uniforms;
+
+    if (!pass.shader.loadFromMemory(translated.code, sf::Shader::Type::Fragment)) {
         std::cerr << "Sound shader compilation failed" << std::endl;
         return false;
     }
@@ -797,22 +825,22 @@ void RenderCore::renderSoundBatch(int batchSamples, const SoundState& state,
     // 设置 uniforms，只设 shader 里真的存在的（否则 SFML 每批都刷 not found 警告）
     RenderPass& sound = *m_soundPass;
     if (sound.locIResolution >= 0) {
-        sound.shader.setUniform("iResolution", sf::Glsl::Vec3(static_cast<float>(batchSamples), 1.0f, 1.0f));
+        glUniform3f(sound.locIResolution, static_cast<float>(batchSamples), 1.0f, 1.0f);
     }
-    if (sound.locITime >= 0) sound.shader.setUniform("iTime", state.time);
-    if (sound.locITimeDelta >= 0) sound.shader.setUniform("iTimeDelta", 1.0f / SOUND_SAMPLE_RATE);
-    if (sound.locIFrame >= 0) sound.shader.setUniform("iFrame", state.frame);
-    if (sound.locIFrameRate >= 0) sound.shader.setUniform("iFrameRate", static_cast<float>(SOUND_SAMPLE_RATE));
+    if (sound.locITime >= 0) glUniform1f(sound.locITime, state.time);
+    if (sound.locITimeDelta >= 0) glUniform1f(sound.locITimeDelta, 1.0f / SOUND_SAMPLE_RATE);
+    if (sound.locIFrame >= 0) glUniform1i(sound.locIFrame, state.frame);
+    if (sound.locIFrameRate >= 0) glUniform1f(sound.locIFrameRate, static_cast<float>(SOUND_SAMPLE_RATE));
     if (sound.locIMouse >= 0) {
-        sound.shader.setUniform("iMouse", state.mouse);
+        glUniform4f(sound.locIMouse, state.mouse.x, state.mouse.y, state.mouse.z,
+                    state.mouse.w);
     }
-    if (sound.locIDate >= 0) sound.shader.setUniform("iDate", sf::Glsl::Vec4(2024.0f, 1.0f, 1.0f, 0.0f));
-    if (sound.locISampleRate >= 0) sound.shader.setUniform("iSampleRate", SOUND_SAMPLE_RATE);
-    if (sound.locISampleOffset >= 0) sound.shader.setUniform("iSampleOffset", static_cast<int>(state.sampleOffset));
+    if (sound.locIDate >= 0) glUniform4f(sound.locIDate, 2024.0f, 1.0f, 1.0f, 0.0f);
+    if (sound.locISampleRate >= 0) glUniform1i(sound.locISampleRate, SOUND_SAMPLE_RATE);
+    if (sound.locISampleOffset >= 0) glUniform1i(sound.locISampleOffset, static_cast<int>(state.sampleOffset));
 
     // 设置 iChannel uniforms（绑定其他 Buffer 的纹理）
     for (int ch = 0; ch < 4; ++ch) {
-        std::string uniformName = "iChannel" + std::to_string(ch);
         if (m_soundPass->channels[ch]) {
             GLTexture* tex = getChannelTexture(*m_soundPass->channels[ch]);
             if (tex) {
@@ -821,7 +849,7 @@ void RenderCore::renderSoundBatch(int batchSamples, const SoundState& state,
                 glBindSampler(ch, m_textures.sampler(m_soundPass->channels[ch]->filter,
                                                      m_soundPass->channels[ch]->wrap));
                 if (m_soundPass->locChannels[ch] >= 0) {
-                    m_soundPass->shader.setUniform(uniformName, sf::Shader::CurrentTexture);
+                    glUniform1i(m_soundPass->locChannels[ch], ch);  // 采样器取纹理单元 ch
                 }
             }
         }
@@ -833,7 +861,7 @@ void RenderCore::renderSoundBatch(int batchSamples, const SoundState& state,
         channelTimeValues[i] = state.time;
     }
     if (m_soundPass->locChannelTime >= 0) {
-        m_soundPass->shader.setUniformArray("iChannelTime", channelTimeValues.data(), 4);
+        glUniform1fv(m_soundPass->locChannelTime, 4, channelTimeValues.data());
     }
 
     // 渲染

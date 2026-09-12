@@ -26,6 +26,7 @@ A Shadertoy shader emulator based on SFML 3, allowing you to run Shadertoy shade
 - cxxopts
 - nlohmann_json
 - FFmpeg dev libraries (libavcodec, libavformat, libavutil, libswscale, libswresample) — for video export
+- ANGLE — the shader translator that turns GLSL ES into desktop GLSL and fills in WebGL's uninitialized-variable semantics
 - glslangValidator (optional, the default GLSL preprocessor — see "GLSL Preprocessor" below)
 
 ## Building
@@ -304,6 +305,25 @@ Both export modes accept `--dump-audio out.wav` to additionally write the Sound 
 | `iDate` | vec4 | Date and time |
 | `iChannel0-3` | sampler2D | Input channels |
 | `iChannelResolution` | vec3[4] | Channel resolutions |
+
+### Uninitialized Variables
+
+An uninitialized variable is undefined per the GLSL spec; desktop drivers hand back whatever
+was left in the register (measured: `float`/`vec3` do not come back as 0). Shadertoy runs on
+WebGL, which additionally guarantees zero, and plenty of shaders lean on that. So the whole
+shader is handed to **ANGLE** — the shader translator Chromium uses for WebGL — which turns it
+into desktop GLSL and fills in the WebGL semantics along the way:
+
+```glsl
+float d;         // becomes float d = 0.0;
+vec3 col;        // becomes vec3 col = vec3(0.0);
+RayResult res;   // whole struct zeroed, missed field assignments included
+```
+
+The zeroing is done by a real GLSL front end rather than text matching, so structs, arrays and
+function locals are all covered. The cost: shaders have to be written in GLSL ES (Shadertoy's
+already are), and compile errors come from ANGLE — line numbers still refer to your shader
+source file.
 
 ### Coordinate System and Orientation
 

@@ -20,6 +20,7 @@ python tests/run_tests.py --only alpha              # 只跑目录名含 alpha �
 |---|---|
 | `selftest/` | 单 pass：`iFrame` / `iTime` / `iDate` 是否正确传入，以及图像上下方向 |
 | `images/` | 图片序列导出：帧范围、步长、文件名，以及中间帧确实渲染过（用 `selftest/` 的场景） |
+| `skipintermediate/` | 导出图片默认跳过无状态的中间帧（结果与全渲染逐像素一致），`--force-skip-intermediate` 连有状态的一起跳（于是不一致） |
 | `multipass/` | Buffer 与 Image 两个 pass 看到的 `iFrame` 必须一致（曾差一整帧） |
 | `passres/` | Buffer 独立分辨率：buffer 内看到的 `iResolution` 应是它自己的，而非窗口的 |
 | `texture/` | 文件纹理通道：加载、采样值，以及 `flipY` 的两个方向 |
@@ -33,6 +34,7 @@ python tests/run_tests.py --only alpha              # 只跑目录名含 alpha �
 | `sound/` | Sound pass 左右声道各几个已知频率，`--dump-audio` 导出后校验频率、幅度和声道隔离 |
 | `sound_common/` | Sound 引用 common 里的函数，公共代码只能展开一次（用 `sound/` 的场景） |
 | `preprocessor/` | 宏、参数宏、条件编译、`#undef`、`#include`，内置与外部预处理器结果必须一致（外部需要 `glslangValidator`） |
+| `zeroinit/` | 未初始化的变量被补成 0（内置类型、多声明、已有初值的不动），struct 成员和 uniform 不能被误加初值 |
 | `video/` | 视频导出的帧数、时长和音轨，用 `ffprobe` 核对，并确认音频时长跟着视频走而不是按每帧 0.5 秒累积（用 `sound/` 的场景） |
 
 有几个用例共用 `sound/` 和 `selftest/` 里的场景，那些 shader 只存一份。

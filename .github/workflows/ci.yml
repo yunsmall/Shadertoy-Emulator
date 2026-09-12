@@ -14,8 +14,24 @@ env:
   VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg_cache,readwrite"
 
 jobs:
+  # x64 和 arm64 走同一套流程，差别只在 runner 和 triplet，所以用 matrix 摆一起，
+  # 免得改了一边忘了另一边
   linux:
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            triplet: x64-linux
+            vcpkg-cache-key: vcpkg-bin-linux
+            artifact-name: ShadertoyEmulator-linux-x64
+            deb-arch: amd64
+          - runner: ubuntu-24.04-arm
+            triplet: arm64-linux
+            vcpkg-cache-key: vcpkg-bin-linux-arm64
+            artifact-name: ShadertoyEmulator-linux-arm64
+            deb-arch: arm64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
@@ -23,7 +39,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            ninja-build xvfb libgl1-mesa-dri python3-pil python3-numpy ffmpeg \
+            ninja-build xvfb libgl1-mesa-dri python3-pil python3-numpy python3-venv ffmpeg \
             libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
             libx11-dev libxrandr-dev libxcursor-dev libxi-dev libxext-dev libxrender-dev \
             libgl1-mesa-dev libudev-dev libasound2-dev
@@ -35,7 +51,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: vcpkg_cache
-          key: vcpkg-bin-linux-${{ env.VCPKG_COMMIT }}
+          key: ${{ matrix.vcpkg-cache-key }}-${{ env.VCPKG_COMMIT }}
 
       - name: 装 vcpkg 与依赖
         run: |
@@ -44,8 +60,8 @@ jobs:
           ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
           # ffmpeg 用发行版的 libav*-dev：CMakeLists 里 find_package(FFMPEG) 找不到会回退 pkg-config，
           # 这样能省掉 vcpkg 从源码编 ffmpeg 的那几十分钟
-          ./vcpkg/vcpkg install sfml imgui-sfml cxxopts nlohmann-json "glad[loader]" \
-            --triplet x64-linux
+          ./vcpkg/vcpkg install sfml imgui-sfml cxxopts nlohmann-json "glad[loader]" angle \
+            --triplet ${{ matrix.triplet }}
 
       - name: 配置与构建
         run: |
@@ -80,7 +96,7 @@ jobs:
           [[ "$version" =~ ^[0-9] ]] || version="0.0.0"
           # ffmpeg 走的是发行版的动态库，依赖得写进包元信息里，用户 apt install 时
           # 才会连它那一串运行库一起装上
-          fpm -s dir -t deb -n shadertoy-emulator -v "$version" \
+          fpm -s dir -t deb -n shadertoy-emulator -v "$version" -a ${{ matrix.deb-arch }} \
             --depends libavcodec60 --depends libavformat60 --depends libavutil58 \
             --depends libswscale7 --depends libswresample4 \
             --depends libx11-6 --depends libxrandr2 --depends libxcursor1 \
@@ -92,7 +108,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ShadertoyEmulator-linux
+          name: ${{ matrix.artifact-name }}
           path: shadertoy-emulator_*.deb
 
       # 存/取拆开是为了让保存无条件执行。默认的缓存 action 只在 job 成功时才存，
@@ -102,7 +118,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: vcpkg_cache
-          key: vcpkg-bin-linux-${{ env.VCPKG_COMMIT }}
+          key: ${{ matrix.vcpkg-cache-key }}-${{ env.VCPKG_COMMIT }}
 
   windows:
     runs-on: windows-2022
@@ -125,7 +141,7 @@ jobs:
           ./vcpkg/bootstrap-vcpkg.bat -disableMetrics
           # 只装 x264：测试的视频用例只要求 H.264，AAC 是 ffmpeg 自带的。
           # 本机那套六个 feature 会让首次构建再多个几十分钟
-          ./vcpkg/vcpkg install sfml imgui-sfml cxxopts nlohmann-json "glad[loader]" "ffmpeg[x264]" `
+          ./vcpkg/vcpkg install sfml imgui-sfml cxxopts nlohmann-json "glad[loader]" angle "ffmpeg[x264]" `
             --triplet x64-windows
 
       - name: 配置与构建
@@ -214,4 +230,5 @@ jobs:
           draft: true
           files: |
             artifacts/ShadertoyEmulator-win64/*.zip
-            artifacts/ShadertoyEmulator-linux/*.deb
+            artifacts/ShadertoyEmulator-linux-x64/*.deb
+            artifacts/ShadertoyEmulator-linux-arm64/*.deb
