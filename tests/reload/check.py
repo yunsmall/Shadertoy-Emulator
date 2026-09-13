@@ -6,12 +6,14 @@ from utils import ROOT, export, pixel
 
 SHADER = ROOT / "tests" / "reload" / "image.glsl"
 # 每帧都得渲染，否则重载点所在的帧根本不会被渲染（图片模式默认跳中间帧）
-ARGS = ["tests/reload/config.json", "--images", "0:4001:4000", "--render-all-frames"]
-RELOAD_FRAME = 2000
+ARGS = ["tests/reload/config.json", "--images", "0:10001:10000", "--render-all-frames"]
+# 得给下面的脚本留出改文件的时间：从第 0 帧落盘到这一帧之间，它才动得了手。
+# 窗口太小的话（CI 上渲染很快）会赶不上，那就变成"重载读到的是旧文件"了
+RELOAD_FRAME = 5000
 
-# 换上去的 0.75, 0.25, 0.5 落到 8 位是这个值。旧颜色不写死——先跑一趟原样的读出来
-# 当基准，浮点转 8 位怎么舍入不值得在这个用例里赌
-NEW_COLOR = (191, 64, 127)
+# 新 shader 的颜色在红分量上是 0.75，旧的是 0.25。具体量化成几不写死：正好落在 .5
+# 上的量转 8 位时各家驱动的舍入不一样（本机 NVIDIA 给 127，CI 的 llvmpipe 给 128）
+NEW_RED_MIN = 150
 BROKEN = ("void mainImage(out vec4 fragColor, in vec2 fragCoord) {\n"
           "    fragColor = vec4(1.0\n}\n")
 
@@ -37,15 +39,12 @@ def _run_replacing_shader(exe, outdir, new_text):
     return proc.returncode, out + err
 
 
-def _last_frame_color(path, want, label, log, ok):
+def _frame_color(path, log, label):
+    """读最后一帧的颜色，没导出成返回 None"""
     if not path.exists():
-        print(f"    {label}：没有导出最后一帧")
-        return False
-    got = pixel(path, 0.5, 0.5)
-    if got != want:
-        print(f"    {label}：最后一帧是 {got}，期望 {want}\n{log}")
-        return False
-    return ok
+        print(f"    {label}：没有导出最后一帧\n{log}")
+        return None
+    return pixel(path, 0.5, 0.5)
 
 
 def run(exe, out):
@@ -55,7 +54,7 @@ def run(exe, out):
     try:
         # 先原样跑一趟，把"没重载时最后一帧是什么颜色"记下来当基准
         export(exe, [*ARGS], out / "base")
-        old_color = pixel(out / "base" / "04000.png", 0.5, 0.5)
+        old_color = pixel(out / "base" / "10000.png", 0.5, 0.5)
 
         # 换成另一种颜色：重载成功的话，最后一帧该由新 shader 渲染
         rc, log = _run_replacing_shader(
@@ -66,7 +65,10 @@ def run(exe, out):
         if "Reloaded config" not in log:
             ok = False
             print(f"    没有重载成功的日志：\n{log}")
-        ok = _last_frame_color(out / "ok" / "04000.png", NEW_COLOR, "重载成功后", log, ok)
+        got = _frame_color(out / "ok" / "10000.png", log, "重载成功后")
+        if got is None or got == old_color or got[0] < NEW_RED_MIN:
+            ok = False
+            print(f"    重载成功后最后一帧是 {got}，应该由新 shader 渲染（红分量 0.75）\n{log}")
 
         # 先还原再跑第二趟：不还原的话它启动时读到的还是上一趟留下的新颜色，
         # "保留原有 shader"保的就成了那份新的
@@ -80,7 +82,10 @@ def run(exe, out):
         if "Reload failed" not in log:
             ok = False
             print(f"    没有重载失败的日志：\n{log}")
-        ok = _last_frame_color(out / "broken" / "04000.png", old_color, "重载失败后", log, ok)
+        got = _frame_color(out / "broken" / "10000.png", log, "重载失败后")
+        if got != old_color:
+            ok = False
+            print(f"    重载失败后最后一帧是 {got}，应该还是旧颜色 {old_color}\n{log}")
     finally:
         SHADER.write_text(original, encoding="utf-8")
 
