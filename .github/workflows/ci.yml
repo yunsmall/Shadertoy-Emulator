@@ -12,6 +12,11 @@ env:
   # 钉住 commit 才能让 CI 变红等价于代码有问题
   VCPKG_COMMIT: 82e69bce83f53191d728414ac24922e8496e34c4
   VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg_cache,readwrite"
+  # 依赖列表只写这一份：缓存的 key 由它算出来，install 也用它。加包去包时这个字符串一变
+  # 哈希就变，key 跟着变，新编的包才存得进去——缓存同 key 覆盖不了，否则像 angle 那样
+  # 后加进来的包永远进不了缓存，每次都得重编一遍
+  VCPKG_PACKAGES_LINUX: "sfml imgui-sfml cxxopts nlohmann-json glad[loader] angle"
+  VCPKG_PACKAGES_WINDOWS: "sfml imgui-sfml cxxopts nlohmann-json glad[loader] angle ffmpeg[x264]"
 
 jobs:
   # x64 和 arm64 走同一套流程，差别只在 runner 和 triplet，所以用 matrix 摆一起，
@@ -44,6 +49,12 @@ jobs:
             libx11-dev libxrandr-dev libxcursor-dev libxi-dev libxext-dev libxrender-dev \
             libgl1-mesa-dev libudev-dev libasound2-dev
 
+      # key 里带着依赖列表的哈希。得放在恢复之前，下面那步要用它的输出。
+      # Actions 没有对字符串算哈希的函数（hashFiles 只认文件），只能自己来一下
+      - name: 算依赖列表的哈希
+        id: deps
+        run: echo "hash=$(printf '%s' "$VCPKG_PACKAGES_LINUX" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
       # 只缓存二进制包，别缓存 vcpkg/installed：恢复缓存会把 vcpkg/ 目录建出来，
       # 紧接着的 git clone 就会撞上「destination path already exists」
       - name: 恢复 vcpkg 二进制缓存
@@ -51,7 +62,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: vcpkg_cache
-          key: ${{ matrix.vcpkg-cache-key }}-${{ env.VCPKG_COMMIT }}
+          key: ${{ matrix.vcpkg-cache-key }}-${{ env.VCPKG_COMMIT }}-${{ steps.deps.outputs.hash }}
 
       - name: 装 vcpkg 与依赖
         run: |
@@ -60,7 +71,10 @@ jobs:
           ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
           # ffmpeg 用发行版的 libav*-dev：CMakeLists 里 find_package(FFMPEG) 找不到会回退 pkg-config，
           # 这样能省掉 vcpkg 从源码编 ffmpeg 的那几十分钟
-          ./vcpkg/vcpkg install sfml imgui-sfml cxxopts nlohmann-json "glad[loader]" angle \
+          #
+          # 用 ${{ }} 插值而不是 $VAR：glad[loader] 里的方括号是通配符，bash 会拿它去
+          # 匹配文件名，撞上叫 gladl 之类的文件就被换掉了
+          ./vcpkg/vcpkg install ${{ env.VCPKG_PACKAGES_LINUX }} \
             --triplet ${{ matrix.triplet }}
 
       - name: 配置与构建
@@ -134,12 +148,18 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: vcpkg_cache
-          key: ${{ matrix.vcpkg-cache-key }}-${{ env.VCPKG_COMMIT }}
+          key: ${{ matrix.vcpkg-cache-key }}-${{ env.VCPKG_COMMIT }}-${{ steps.deps.outputs.hash }}
 
   windows:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
+
+      # 同 linux：key 里带着依赖列表的哈希，得在恢复之前算出来
+      - name: 算依赖列表的哈希
+        id: deps
+        shell: bash
+        run: echo "hash=$(printf '%s' "$VCPKG_PACKAGES_WINDOWS" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
 
       # 同 linux：只缓存二进制包，缓存 vcpkg/installed 会把 vcpkg/ 目录占住
       - name: 恢复 vcpkg 二进制缓存
@@ -147,7 +167,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: vcpkg_cache
-          key: vcpkg-bin-windows-${{ env.VCPKG_COMMIT }}
+          key: vcpkg-bin-windows-${{ env.VCPKG_COMMIT }}-${{ steps.deps.outputs.hash }}
 
       - name: 装 vcpkg 与依赖
         shell: pwsh
@@ -157,7 +177,7 @@ jobs:
           ./vcpkg/bootstrap-vcpkg.bat -disableMetrics
           # 只装 x264：测试的视频用例只要求 H.264，AAC 是 ffmpeg 自带的。
           # 本机那套六个 feature 会让首次构建再多个几十分钟
-          ./vcpkg/vcpkg install sfml imgui-sfml cxxopts nlohmann-json "glad[loader]" angle "ffmpeg[x264]" `
+          ./vcpkg/vcpkg install ${{ env.VCPKG_PACKAGES_WINDOWS }} `
             --triplet x64-windows
 
       - name: 配置与构建
@@ -220,7 +240,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: vcpkg_cache
-          key: vcpkg-bin-windows-${{ env.VCPKG_COMMIT }}
+          key: vcpkg-bin-windows-${{ env.VCPKG_COMMIT }}-${{ steps.deps.outputs.hash }}
 
   # 两个平台都构建出来才发版，免得出现「Release 上只有一个平台的包」这种半拉子状态。
   # 发布集中到这里，构建那俩 job 就不用各自拿写权限了
