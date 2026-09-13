@@ -72,8 +72,8 @@ jobs:
           # ffmpeg 用发行版的 libav*-dev：CMakeLists 里 find_package(FFMPEG) 找不到会回退 pkg-config，
           # 这样能省掉 vcpkg 从源码编 ffmpeg 的那几十分钟
           #
-          # 用 ${{ }} 插值而不是 $VAR：glad[loader] 里的方括号是通配符，bash 会拿它去
-          # 匹配文件名，撞上叫 gladl 之类的文件就被换掉了
+          # 用 Actions 的表达式插值而不是 $VAR：glad[loader] 里的方括号是通配符，
+          # bash 会拿它去匹配文件名，撞上叫 gladl 之类的文件就被换掉了
           ./vcpkg/vcpkg install ${{ env.VCPKG_PACKAGES_LINUX }} \
             --triplet ${{ matrix.triplet }}
 
