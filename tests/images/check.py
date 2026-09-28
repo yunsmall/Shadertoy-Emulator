@@ -1,4 +1,6 @@
 """图片序列导出（帧范围/多区间/中间帧）"""
+import re
+
 from utils import export, pixel
 
 
@@ -8,8 +10,19 @@ def run(exe, out):
     # 这里盯的是"--render-all-frames 一帧不落地渲染"那条路：start 非 0、step 非 1 时
     # 要把 0..11 全跑一遍，只存 5/8/11。若它图省事只渲染被保存的那几帧，iFrame 就会是
     # 0/1/2。默认那条跳帧的路由 skipintermediate 用例盯着
-    export(exe, ["tests/selftest/selftest.glsl", "--width", "128", "--height", "128",
-                 "--images", "5:12:3", "--render-all-frames"], out)
+    r = export(exe, ["tests/selftest/selftest.glsl", "--width", "128", "--height", "128",
+                     "--images", "5:12:3", "--render-all-frames"], out)
+
+    # 渲染耗时得和总耗时分开报：总耗时里 PNG 编码占大头，合成一个数会让人以为
+    # shader 就这么慢。它的分母是完整渲染过的帧数——中间帧不算，它们只跑状态链条上
+    # 的一部分通道，混进去会把"一帧多贵"算低，这里应该是 3（存盘的那三帧）
+    m = re.search(r"render: ([\d.]+) ms/frame over (\d+) full frames", r.stdout)
+    if not m:
+        ok = False
+        print(f"    没报出渲染耗时：{r.stdout.splitlines()[-1] if r.stdout else '(无输出)'}")
+    elif int(m.group(2)) != 3 or float(m.group(1)) <= 0:
+        ok = False
+        print(f"    渲染耗时不对：{m.group(0)}")
 
     expected = [5, 8, 11]
     got = sorted(p.name for p in out.glob("*.png"))

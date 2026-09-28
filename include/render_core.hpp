@@ -57,6 +57,18 @@ public:
     // 把画面贴到输出目标：debugName 指定的 pass 顶替 Image，没开就正常跑 Image
     void renderToScreen(const FrameState& frame, const std::string& debugName);
 
+    // 一帧渲染在 GPU 上跑了多久。begin/end 之间提交的命令由驱动侧的计时器报回来，
+    // CPU 一路上不等——夹这对查询进去不会拖慢渲染，和 glFinish 那种同步点不是一回事。
+    // 结果是异步的，隔一两帧才读得到。enabled=false 的帧不测：跳帧模式的中间帧只跑
+    // 状态链条上的一部分通道，混进平均会把"一帧多贵"算低
+    void beginRenderTiming(bool enabled);
+    void endRenderTiming();
+    // 把 GPU 报回来的耗时收进累加器。平时每帧开头顺手收，wait=true 是导出收尾时把
+    // 剩下几个还没回来的等回来（不然结尾几帧的数拿不到）
+    void collectRenderTiming(bool wait);
+    double timedRenderSeconds() const { return m_timingSeconds; }
+    int timedRenderFrames() const { return m_timingFrames; }
+
     // 渲染一批音频采样。生成归这里（它本来就是渲染），送去播放还是存盘由调用方定
     void renderSoundBatch(int batchSamples, const SoundState& state, std::vector<int16_t>& out);
 
@@ -142,4 +154,17 @@ private:
 
     int m_soundBatchSamples = 22050;  // 一批多少采样，受 GL_MAX_TEXTURE_SIZE 限制
     std::vector<float> m_soundFloatData;  // 读回采样的中转，得按 FBO 宽度开
+
+    // GPU 耗时查询。三个一循环：结果要隔一两帧才就绪，轮着用才不会互相覆盖。
+    // 驱动没这个能力（GL 3.3 之前）时 m_timingUsable 为 false，整套统计静默关掉——
+    // 报不出来总比报个假的强
+    static constexpr int kTimingQueries = 3;
+    std::array<GLuint, kTimingQueries> m_timingQueries{};
+    int m_timingWrite = 0;   // 下一帧开哪个
+    int m_timingRead = 0;    // 最早那个还没读的
+    int m_timingCount = 0;   // 环里排着几个还没读
+    bool m_timingActive = false;
+    bool m_timingUsable = false;
+    double m_timingSeconds = 0.0;
+    int m_timingFrames = 0;
 };

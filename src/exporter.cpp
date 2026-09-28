@@ -169,7 +169,8 @@ void Exporter::writeAudioDump() {
 }
 
 void Exporter::finish(const std::string& label, int renderedFrames,
-                      std::chrono::steady_clock::time_point start) {
+                      std::chrono::steady_clock::time_point start,
+                      double renderSeconds, int renderFrames) {
     writeAudioDump();
 
     const double elapsed = std::chrono::duration<double>(
@@ -177,7 +178,18 @@ void Exporter::finish(const std::string& label, int renderedFrames,
     std::cout << "Exported " << label << " in " << std::fixed << std::setprecision(2)
               << elapsed << "s";
     if (renderedFrames > 0) {
-        std::cout << " (" << (elapsed * 1000.0 / renderedFrames) << " ms/frame)";
+        std::cout << " (" << (elapsed * 1000.0 / renderedFrames) << " ms/frame over "
+                  << renderedFrames << " frames)";
     }
     std::cout << std::endl;
+
+    // 渲染另起一行单独报：编码和落盘经常比渲染本身还贵，混在一个数里会让人以为
+    // shader 就这么慢。两个分母还是分开的——跳帧模式的中间帧只跑状态链条上的
+    // 一部分通道，不算进渲染这个平均，所以点明是"完整渲染"的帧数，别和上面那个
+    // 走完全程的帧数看混
+    if (renderFrames > 0) {
+        std::cout << "  render: " << (renderSeconds * 1000.0 / renderFrames)
+                  << " ms/frame over " << renderFrames << " full frames ("
+                  << renderSeconds * 1000.0 << "ms)" << std::endl;
+    }
 }

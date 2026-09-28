@@ -291,18 +291,28 @@ void ShadertoyEmulator::runImages() {
         }
 
         const bool intermediate = !target && !m_options.renderAllFrames;
+        m_core.beginRenderTiming(target);
         renderPasses(intermediate);
         if (target) {
             renderToScreen();
+        }
+        m_core.endRenderTiming();
+
+        // 存盘在计时段外：PNG 编码常常比渲染本身还贵，算进去就分不清两者各占多少
+        if (target) {
             saveFrame();
         }
     }
+
+    // 渲染耗时是 GPU 异步报回来的，收尾得把最后几个还没到的等回来
+    m_core.collectRenderTiming(true);
 
     // 每帧成本按实际渲染的帧数算，不是存盘张数：挑出来的帧可能只占一小段，
     // 全渲染和跳中间帧那两条路都是逐帧走到 stop，拿存盘张数去除会把成本算高；
     // 强制跳帧那条真的只渲染了目标帧
     const int rendered = m_options.forceSkipIntermediate ? saved : stop;
-    m_exporter.finish(std::to_string(saved) + " frames", rendered, exportStart);
+    m_exporter.finish(std::to_string(saved) + " frames", rendered, exportStart,
+                      m_core.timedRenderSeconds(), m_core.timedRenderFrames());
 }
 
 void ShadertoyEmulator::runVideo() {
@@ -322,16 +332,24 @@ void ShadertoyEmulator::runVideo() {
               << std::filesystem::absolute(m_options.videoPath) << std::endl;
 
     while (m_frameCount < totalFrames) {
+        // 编码和渲染分开计时：H.264 编码常常比渲染本身还贵，混在一起就看不出
+        // shader 多重了
+        m_core.beginRenderTiming(true);
         renderPasses();
         renderToScreen();
+        m_core.endRenderTiming();
 
         m_exporter.writeVideoFrame();
     }
 
     m_exporter.endVideo();
 
+    // 同 runImages：把最后几个还没回来的查询等回来
+    m_core.collectRenderTiming(true);
+
     m_exporter.finish("video: " + std::to_string(totalFrames) + " frames",
-                      totalFrames, exportStart);
+                      totalFrames, exportStart,
+                      m_core.timedRenderSeconds(), m_core.timedRenderFrames());
 }
 
 void ShadertoyEmulator::handleEvents() {

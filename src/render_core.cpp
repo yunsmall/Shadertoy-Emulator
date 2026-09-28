@@ -93,6 +93,14 @@ void RenderCore::init(int width, int height) {
         throw std::runtime_error("Failed to initialize render passes");
     }
     computeMustRunPasses();
+
+    // GPU 计时查询是 GL 3.3 起的核心功能（之前是 ARB_timer_query 扩展）。本程序跑的是
+    // ANGLE 翻出来的 330 core，按理说一定有；万一没有就把统计关掉，报告里不出现那个数
+    m_timingUsable = GLAD_GL_VERSION_3_3 && glad_glBeginQuery != nullptr &&
+                     glad_glGetQueryObjectui64v != nullptr;
+    if (m_timingUsable) {
+        glGenQueries(kTimingQueries, m_timingQueries.data());
+    }
 }
 
 void RenderCore::initQuad() {
@@ -744,6 +752,49 @@ void RenderCore::renderToScreen(const FrameState& frame, const std::string& debu
 
     sf::Shader::bind(nullptr);
     // display() 由调用方统一调用，以支持 ImGui
+}
+
+void RenderCore::beginRenderTiming(bool enabled) {
+    if (!m_timingUsable || !enabled) return;
+
+    // 顺手把就绪的结果收了：环只有三个槽，不腾地方就转不动
+    collectRenderTiming(false);
+    if (m_timingCount == kTimingQueries) {
+        // 环满说明 GPU 已经落后三帧以上，这一帧不测，免得盖掉还没读的结果
+        return;
+    }
+
+    glBeginQuery(GL_TIME_ELAPSED, m_timingQueries[m_timingWrite]);
+    m_timingActive = true;
+}
+
+void RenderCore::endRenderTiming() {
+    if (!m_timingActive) return;
+
+    glEndQuery(GL_TIME_ELAPSED);
+    m_timingActive = false;
+    m_timingWrite = (m_timingWrite + 1) % kTimingQueries;
+    m_timingCount++;
+}
+
+void RenderCore::collectRenderTiming(bool wait) {
+    if (!m_timingUsable) return;
+
+    while (m_timingCount > 0) {
+        const GLuint query = m_timingQueries[m_timingRead];
+        GLint ready = 0;
+        glGetQueryObjectiv(query, GL_QUERY_RESULT_AVAILABLE, &ready);
+        // 查询按提交顺序完成，前面这个没就绪，后面的只会更晚。wait 是导出收尾用的，
+        // 宁可等也要把最后几帧的数拿全
+        if (!ready && !wait) break;
+
+        GLuint64 ns = 0;
+        glGetQueryObjectui64v(query, GL_QUERY_RESULT, &ns);  // wait 时卡在这儿等结果
+        m_timingSeconds += static_cast<double>(ns) * 1e-9;
+        m_timingFrames++;
+        m_timingRead = (m_timingRead + 1) % kTimingQueries;
+        m_timingCount--;
+    }
 }
 
 // 传进来的已经是预处理好的整段代码（common 和 pass 一起过一次），这里只套头部和 main。

@@ -34,9 +34,12 @@ public:
     void writeAudioDump();
 
     // 导出收尾：写音频、报耗时。耗时由程序自己报——外部的 time 在 Windows 上
-    // 量不到原生进程，给的数不能用
+    // 量不到原生进程，给的数不能用。
+    // renderSeconds/renderFrames 是其中纯渲染的那部分，截图、编码、落盘都不在里面，
+    // 单独一行报出来才看得出 shader 本身多重；驱动报不出耗时就传 0
     void finish(const std::string& label, int renderedFrames,
-                std::chrono::steady_clock::time_point start);
+                std::chrono::steady_clock::time_point start,
+                double renderSeconds, int renderFrames);
 
 private:
     void readOutputPixels(std::vector<uint8_t>& pixels);  // 输出目标，bottom-up RGBA8
